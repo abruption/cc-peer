@@ -66,6 +66,11 @@ That drops `cc_peer.py` and its [Claude Code skill](skills/cc-peer/SKILL.md) int
 `~/.claude/skills/cc-peer/`, and links `~/.local/bin/cc-peer`. Nothing else is touched.
 Remove it with `./install.sh --uninstall [--host ...]`.
 
+`cc-peer update` refreshes this machine from the latest GitHub release. For another machine,
+`./install.sh --host <host>` pushes this copy over SSH — deliberately, since a target with no
+route to GitHub is one of the cases this tool exists for. `cc-peer update --host` reports what
+that machine has rather than trying to make it fetch.
+
 **Remote installs push the files over the SSH connection itself**, so the target needs
 no internet access — which matters, since air-gapped hosts are one of the reasons this
 exists. It needs `python3` and your SSH access, nothing more.
@@ -100,6 +105,12 @@ git log --oneline -5 | cc-peer send --host web-01 --to api-worker -   # stdin
 
 cc-peer send --host web-01 --to api-worker --dry-run "x"   # resolve only
 cc-peer list --host web-01 --json             # machine-readable
+
+# Versions. list --host reports what that machine has installed and flags a
+# mismatch, since a host left behind by a release won't say so on its own.
+cc-peer update --check                        # is there a newer release?
+cc-peer update                                # replace this installation
+cc-peer update --host web-01                  # report what's over there
 cc-peer send --host web-01 --ssh-opt=-p --ssh-opt=2222 --to api-worker "..."   # note the '='
 
 # Envelope. Sends carry who they're from and how to answer, both resolved from

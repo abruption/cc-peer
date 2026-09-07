@@ -35,9 +35,12 @@ import shlex
 import socket
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 __version__ = "0.3.0"
+GITHUB_REPO = "abruption/cc-peer"
 
 # Claude Code refuses a same-machine message once its serialized form passes
 # about a million characters, so fail here rather than at the far end.
@@ -481,14 +484,29 @@ def emit(as_json: bool, payload: dict, human: str) -> None:
 
 
 def cmd_list(args: argparse.Namespace) -> int:
+    remote_version = None
     if args.host:
         result = run_remote(args.host, ["list"] + (["--all"] if args.all else []), args.ssh_opt)
         sessions = result.get("sessions", [])
+        # Ask the machine what it has installed. result["version"] would only
+        # echo our own, since run_remote ships and runs this very file.
+        remote_version = remote_installed_version(args.host, args.ssh_opt)
     else:
         sessions = discover(include_unreachable=args.all)
 
     where = args.host or "this machine"
-    emit(args.json, {"sessions": sessions}, render_sessions(sessions, where))
+    human = render_sessions(sessions, where)
+    if remote_version and remote_version != __version__:
+        human = (
+            f"{where} runs cc-peer {remote_version}; this machine has {__version__}."
+            f"\nUpdate it with:  cc-peer update --host {args.host}\n\n{human}"
+        )
+    emit(
+        args.json,
+        {"sessions": sessions, "version": __version__,
+         **({"remoteVersion": remote_version} if remote_version else {})},
+        human,
+    )
     return 0
 
 
@@ -501,6 +519,116 @@ def read_message(args: argparse.Namespace) -> str:
     if args.message is None or args.message == "-":
         return sys.stdin.read()
     return args.message
+
+
+def remote_installed_version(host: str, ssh_opts: list[str]) -> str | None:
+    """Version of the copy *installed* on that machine.
+
+    Not the same thing as asking the remote command to report itself:
+    run_remote() ships our own source and runs that, so it would always echo
+    our version back. The installed file is what a session over there will
+    actually use, and it is what can fall behind.
+    """
+    check_ssh_argument(host, "--host")
+    for opt in ssh_opts:
+        check_ssh_argument(opt, "--ssh-opt")
+    probe = 'python3 "$HOME/.claude/skills/cc-peer/cc_peer.py" --version 2>/dev/null'
+    try:
+        done = subprocess.run(
+            ["ssh", *ssh_opts, host, probe],
+            capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    out = done.stdout.strip()
+    return out.split()[-1] if out.startswith("cc-peer") else None
+
+
+def parse_version(text: str) -> tuple[int, ...]:
+    """(1, 2, 3) from "v1.2.3". Unparseable parts sort lowest."""
+    parts = text.strip().lstrip("vV").split(".")
+    return tuple(int(p) if p.isdigit() else 0 for p in parts[:3])
+
+
+def latest_release() -> tuple[str, str]:
+    """(tag, download URL) of the newest release on GitHub."""
+    url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+    request = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json"})
+    try:
+        with urllib.request.urlopen(request, timeout=DETECT_TIMEOUT * 4) as response:
+            tag = json.load(response).get("tag_name", "")
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        raise CcPeerError(
+            f"could not reach GitHub to check for updates: {exc}. "
+            f"On a host with no route out, update it from a machine that has one: "
+            f"cc-peer update --host <this host>"
+        ) from exc
+    if not tag:
+        raise CcPeerError("GitHub returned no release tag")
+    return tag, f"https://raw.githubusercontent.com/{GITHUB_REPO}/{tag}/cc_peer.py"
+
+
+def cmd_update(args: argparse.Namespace) -> int:
+    # Pushing from here beats asking the far side to fetch: the machines this
+    # tool exists for are the ones without a route to GitHub.
+    if args.host:
+        there = remote_installed_version(args.host, args.ssh_opt)
+        if there is None:
+            human = (f"{args.host} has no cc-peer installed (or it is too old to say).\n"
+                     f"Install it with:  ./install.sh --host {args.host}")
+        elif there == __version__:
+            human = f"{args.host} runs cc-peer {there} — same as this machine."
+        else:
+            human = (f"{args.host} runs cc-peer {there}; this machine has {__version__}.\n"
+                     f"Push it with:  ./install.sh --host {args.host}")
+        emit(args.json,
+             {"host": args.host, "remoteVersion": there, "current": __version__},
+             human)
+        return 0
+
+    tag, url = latest_release()
+    latest, current = parse_version(tag), parse_version(__version__)
+
+    if args.check:
+        state = "up to date" if current >= latest else f"{tag} available"
+        emit(
+            args.json,
+            {"current": __version__, "latest": tag, "outdated": current < latest},
+            f"cc-peer {__version__} — {state}",
+        )
+        return 0
+
+    if current >= latest:
+        emit(args.json, {"current": __version__, "latest": tag, "updated": False},
+             f"cc-peer {__version__} is already current ({tag}).")
+        return 0
+
+    target = Path(__file__).resolve()
+    try:
+        with urllib.request.urlopen(url, timeout=DETECT_TIMEOUT * 4) as response:
+            source = response.read()
+    except (urllib.error.URLError, OSError) as exc:
+        raise CcPeerError(f"could not download {tag}: {exc}") from exc
+    if b"__version__" not in source:
+        raise CcPeerError(f"what came back from {url} does not look like cc_peer.py")
+
+    # We are running from the file being replaced. Write beside it and rename,
+    # so a failed download can't leave a half-written script behind.
+    staged = target.with_suffix(".py.new")
+    try:
+        staged.write_bytes(source)
+        staged.chmod(target.stat().st_mode & 0o777)
+        staged.replace(target)
+    except OSError as exc:
+        staged.unlink(missing_ok=True)
+        raise CcPeerError(f"could not replace {target}: {exc}") from exc
+
+    emit(
+        args.json,
+        {"current": __version__, "latest": tag, "updated": True, "path": str(target)},
+        f"cc-peer {__version__} → {tag}  ({target})",
+    )
+    return 0
 
 
 def cmd_send(args: argparse.Namespace) -> int:
@@ -608,6 +736,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sending.add_argument("--dry-run", action="store_true", help="resolve the target, send nothing")
     sending.set_defaults(func=cmd_send)
+
+    updating = subparsers.add_parser("update", help="update this installation")
+    add_common(updating)
+    updating.add_argument(
+        "--check", action="store_true", help="report the available version, change nothing"
+    )
+    updating.set_defaults(func=cmd_update)
 
     return parser
 
