@@ -1,0 +1,35 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: test (${{ matrix.os }}, python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.9 is the floor the README promises; macOS is half the fleet.
+        os: [ubuntu-latest, macos-latest]
+        python: ['3.9', '3.13']
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Compile
+        run: python -m compileall -q cc_peer.py test_cc_peer.py
+      - name: Unit tests
+        run: python -m unittest test_cc_peer -v
+
+  shell:
+    name: shellcheck install.sh
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: shellcheck
+        run: shellcheck --shell=sh install.sh

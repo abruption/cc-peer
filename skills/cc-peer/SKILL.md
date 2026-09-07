@@ -63,16 +63,19 @@ the socket write succeeded — **not** that Claude read it. See below.
 A message from another machine ends with its own return address:
 
 ```
-Reply: cc-peer send --host 100.73.93.61 --to api-worker
+Reply: python3 ~/.claude/skills/cc-peer/cc_peer.py send --host alice@100.73.93.61 --to api-worker --no-reply-to
 ```
 
-That line is the whole address. Run it with your answer and add `--no-reply-to`,
-so the exchange ends with you instead of inviting another round:
+**Run that line as printed** — it already carries the user, an absolute path, and
+`--no-reply-to`. Pipe your answer into it:
 
 ```bash
-printf '%s' "<your answer>" | python3 cc_peer.py send \
-  --host 100.73.93.61 --to api-worker --no-reply-to -
+printf '%s' "<your answer>" | python3 ~/.claude/skills/cc-peer/cc_peer.py send \
+  --host alice@100.73.93.61 --to api-worker --no-reply-to -
 ```
+
+If it fails on the username, the sender's account doesn't exist on your side —
+say so in a reply routed some other way rather than guessing at names.
 
 Reply when the message asked something, or when you finished work it handed you.
 Don't reply to acknowledge receipt — that starts a turn on the other machine and
@@ -86,7 +89,7 @@ spends tokens to say nothing.
   nobody approves. Tell the user they may need to approve it there, or set
   `crossSessionInbound: "accept"` on that worker.
 - **A reply is possible, but not guaranteed.** Every send appends a
-  `Reply: cc-peer send --host … --to …` line naming this session, so the receiver
+  `Reply:` line naming this session and how to reach it, so the receiver
   can answer — *if* that machine can SSH back here. When it can't, nothing
   reports the failure to either side. If an answer matters, say so in the
   message rather than assuming one is coming.

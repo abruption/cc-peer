@@ -157,6 +157,19 @@ That last row matters: a message posted to the inbox [cannot answer a permission
 - **`--host` and `--ssh-opt` are as trusted as your ssh config.** They are handed to `ssh`, so whoever controls them controls where you connect. Values that would make ssh run a local command (`ProxyCommand` and friends) are refused, and a `--host` starting with `-` is rejected outright — but if you allowlist `cc-peer` for an agent, treat it as granting SSH, not just messaging. Message bodies and session names carry no such risk: they are quoted before they reach any shell.
 - **Linux and macOS only.** Native Windows uses named pipes with a mandatory auth line; unsupported here.
 
+## Tests
+
+```bash
+python3 -m unittest test_cc_peer -v
+```
+
+No network, no SSH, no Claude Code — standard library only. CI runs them on Ubuntu and
+macOS against Python 3.9 and 3.13, plus `shellcheck` on the installer.
+
+The cases cover what has actually been wrong here: the argument quoting that stops `--to`
+reaching a remote shell, the caps that weren't enforced under `--dry-run`, and the reply
+line's user and absolute path. A regression in any of those is silent otherwise.
+
 ## Verified
 
 Claude Code **v2.1.263** across four machines over Tailscale SSH — two macOS 26 (Apple silicon) and
