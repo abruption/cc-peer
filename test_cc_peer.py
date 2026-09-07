@@ -219,6 +219,50 @@ class Envelope(unittest.TestCase):
         self.assertLess(out.index("line two"), out.index("Reply:"))
 
 
+class VersionParsing(unittest.TestCase):
+    def test_orders_releases(self):
+        self.assertLess(cc_peer.parse_version("0.2.0"), cc_peer.parse_version("0.3.0"))
+        self.assertLess(cc_peer.parse_version("v0.9.0"), cc_peer.parse_version("v0.10.0"))
+        self.assertEqual(cc_peer.parse_version("v1.2.3"), cc_peer.parse_version("1.2.3"))
+
+    def test_survives_junk_without_raising(self):
+        # A malformed tag must not crash an update check; sorting lowest means
+        # "don't offer this as newer".
+        for text in ("", "not-a-version", "v..", "1.x.3"):
+            self.assertIsInstance(cc_peer.parse_version(text), tuple)
+        self.assertLess(cc_peer.parse_version("junk"), cc_peer.parse_version("0.0.1"))
+
+    def test_ignores_anything_past_patch(self):
+        self.assertEqual(cc_peer.parse_version("1.2.3.4"), (1, 2, 3))
+
+
+class RemoteInstalledVersion(unittest.TestCase):
+    """Why this exists at all: run_remote() ships and runs *our* source, so
+    asking the remote command to report itself would only echo our version.
+    The installed copy is the one that can fall behind."""
+
+    def run_with(self, stdout):
+        completed = mock.Mock(stdout=stdout, returncode=0)
+        with mock.patch.object(cc_peer.subprocess, "run", return_value=completed):
+            return cc_peer.remote_installed_version("web-01", [])
+
+    def test_reads_the_reported_version(self):
+        self.assertEqual(self.run_with("cc-peer 0.2.0\n"), "0.2.0")
+
+    def test_none_when_not_installed(self):
+        self.assertIsNone(self.run_with(""))
+        self.assertIsNone(self.run_with("python3: can't open file\n"))
+
+    def test_none_when_ssh_fails(self):
+        with mock.patch.object(cc_peer.subprocess, "run", side_effect=OSError("boom")):
+            self.assertIsNone(cc_peer.remote_installed_version("web-01", []))
+
+    def test_still_validates_ssh_arguments(self):
+        # This path builds its own ssh command, so it needs the same guard.
+        with self.assertRaises(cc_peer.CcPeerError):
+            cc_peer.remote_installed_version("-oProxyCommand=whoami", [])
+
+
 class OwnSession(unittest.TestCase):
     def test_reads_pid_from_the_exported_socket_path(self):
         rows = [{"pid": 4011, "name": "worker", "reachable": True}]
