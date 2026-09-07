@@ -32,4 +32,8 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: shellcheck
-        run: shellcheck --shell=sh install.sh
+        # SC2016 (no expansion in single quotes) is the point: the heredoc we
+        # pipe to ssh must reach the remote shell with $HOME intact.
+        # SC1007 misreads `CDPATH= cd -- ...`, which is the standard guard
+        # against cd printing a path, not an empty assignment.
+        run: shellcheck --shell=sh --exclude=SC2016,SC1007 install.sh
