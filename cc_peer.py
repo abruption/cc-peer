@@ -28,6 +28,7 @@ import argparse
 import base64
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -40,6 +41,11 @@ __version__ = "0.1.0"
 MAX_MESSAGE_CHARS = 1_000_000
 CONNECT_TIMEOUT = 10.0
 DRAIN_TIMEOUT = 2.0
+DETECT_TIMEOUT = 3.0
+
+# Tailscale hands out addresses from the CGNAT range, 100.64.0.0/10. Matching on
+# "100." alone would also catch ordinary public addresses like 100.200.x.x.
+TAILNET_SECOND_OCTET = range(64, 128)
 
 EXIT_ERROR = 1
 EXIT_NO_TARGET = 2
@@ -191,6 +197,76 @@ def post_to_socket(socket_path: str, text: str) -> None:
 
 
 # --------------------------------------------------------------------------
+# Reply address. A cross-machine message carries no reply address of its own,
+# so the receiving Claude has no way to know answering is even possible. This
+# appends one line saying where to send an answer.
+#
+# It grants nothing: the far side can only reply if it could already SSH here.
+# What it adds is knowing that, which is what the receiver otherwise lacks.
+# --------------------------------------------------------------------------
+
+
+def is_tailnet_address(candidate: str) -> bool:
+    parts = candidate.split(".")
+    if len(parts) != 4 or parts[0] != "100" or not parts[1].isdigit():
+        return False
+    return int(parts[1]) in TAILNET_SECOND_OCTET
+
+
+def _run(command: list[str]) -> str:
+    try:
+        done = subprocess.run(
+            command, capture_output=True, text=True, timeout=DETECT_TIMEOUT
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return done.stdout
+
+
+def detect_reply_host() -> str | None:
+    """This machine's tailnet address, or None if it can't be determined.
+
+    `tailscale ip -4` is the direct answer where the CLI is on PATH. On macOS it
+    usually isn't — the app ships it inside the bundle — so fall back to reading
+    it off the interfaces.
+    """
+    for command in (["tailscale", "ip", "-4"], ["ip", "-4", "-o", "addr", "show"], ["ifconfig"]):
+        for candidate in re.findall(r"\b100\.\d{1,3}\.\d{1,3}\.\d{1,3}\b", _run(command)):
+            if is_tailnet_address(candidate):
+                return candidate
+    return None
+
+
+def own_session() -> dict | None:
+    """The session this process is running inside, if any.
+
+    Claude Code exports the session's own inbox socket path, which carries its
+    pid; the registry turns that into a name. Empty when run from a plain shell.
+    """
+    socket_path = os.environ.get("CLAUDE_CODE_MESSAGING_SOCKET", "")
+    match = re.search(r"(\d+)\.sock$", socket_path)
+    if not match:
+        return None
+    pid = int(match.group(1))
+    for session in discover(include_unreachable=True):
+        if session["pid"] == pid:
+            return session
+    return None
+
+
+def reply_line(explicit_host: str | None) -> str | None:
+    """The line to append, or None when there's nothing useful to say."""
+    session = own_session()
+    if session is None:
+        return None
+    name = session["name"] or str(session["pid"])
+    host = explicit_host or os.environ.get("CC_PEER_REPLY_HOST") or detect_reply_host()
+    if not host:
+        return None
+    return f"---\nReply: cc-peer send --host {host} --to {name}"
+
+
+# --------------------------------------------------------------------------
 # Remote dispatch. Ships this file over SSH and runs it there, so the remote
 # machine needs nothing installed beyond python3.
 # --------------------------------------------------------------------------
@@ -284,6 +360,15 @@ def read_message(args: argparse.Namespace) -> str:
 def cmd_send(args: argparse.Namespace) -> int:
     text = read_message(args)
 
+    # Built here, before dispatch: detection has to run on the sender's machine.
+    # Doing it on the far side would advertise the receiver's own address back
+    # at it. The --b64 path is this script re-running remotely, where the line
+    # is already part of the payload.
+    if args.b64 is None and not args.no_reply_to:
+        line = reply_line(args.reply_to)
+        if line:
+            text = text.rstrip("\n") + "\n\n" + line
+
     if args.host:
         encoded = base64.b64encode(text.encode("utf-8")).decode("ascii")
         remote_argv = ["send", "--to", args.to, "--b64", encoded]
@@ -343,6 +428,14 @@ def build_parser() -> argparse.ArgumentParser:
     sending.add_argument("--to", required=True, metavar="NAME|PID", help="target session")
     sending.add_argument("message", nargs="?", help="message text; omit or use - to read stdin")
     sending.add_argument("--b64", help=argparse.SUPPRESS)  # used for remote dispatch
+    sending.add_argument(
+        "--reply-to",
+        metavar="HOST",
+        help="reply address to advertise (default: this machine's tailnet address)",
+    )
+    sending.add_argument(
+        "--no-reply-to", action="store_true", help="send without a reply address"
+    )
     sending.add_argument("--dry-run", action="store_true", help="resolve the target, send nothing")
     sending.set_defaults(func=cmd_send)
 

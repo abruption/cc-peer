@@ -58,6 +58,26 @@ printf '%s' "$MESSAGE" | python3 cc_peer.py send --host <ssh-host> --to <name> -
 **4. Report honestly.** The command prints `Posted to <name>'s inbox`. That means
 the socket write succeeded — **not** that Claude read it. See below.
 
+## Answering a message you received
+
+A message from another machine ends with its own return address:
+
+```
+Reply: cc-peer send --host 100.73.93.61 --to api-worker
+```
+
+That line is the whole address. Run it with your answer and add `--no-reply-to`,
+so the exchange ends with you instead of inviting another round:
+
+```bash
+printf '%s' "<your answer>" | python3 cc_peer.py send \
+  --host 100.73.93.61 --to api-worker --no-reply-to -
+```
+
+Reply when the message asked something, or when you finished work it handed you.
+Don't reply to acknowledge receipt — that starts a turn on the other machine and
+spends tokens to say nothing.
+
 ## What to tell the user afterwards
 
 - **Posted ≠ delivered.** If the receiving session runs with
@@ -65,16 +85,23 @@ the socket write succeeded — **not** that Claude read it. See below.
   *that* session and drops it after `dialogExpiry` (5 minutes by default) if
   nobody approves. Tell the user they may need to approve it there, or set
   `crossSessionInbound: "accept"` on that worker.
-- **It's one-way.** The receiving Claude has no reply address and cannot answer.
-  If the user wants a response, either check that session's transcript, or ask
-  them to have it post back with `cc-peer` in the other direction.
+- **A reply is possible, but not guaranteed.** Every send appends a
+  `Reply: cc-peer send --host … --to …` line naming this session, so the receiver
+  can answer — *if* that machine can SSH back here. When it can't, nothing
+  reports the failure to either side. If an answer matters, say so in the
+  message rather than assuming one is coming.
+- **Nothing arrives here on its own.** A reply is a fresh message into this
+  session's inbox; it lands when it lands. Don't sit and wait for it — finish
+  the turn, and read it when it shows up.
 
 ## Guardrails
 
 - **Don't send unprompted.** Message a remote session only when the user asked
   for it. A message starts a turn on someone else's machine and spends tokens.
-- **One message, not a conversation.** Don't poll or follow up in a loop waiting
-  for a reaction; there is no reply channel to wait on.
+- **Reply once; don't hold a conversation.** Now that replies are addressable,
+  two agents answering each other will keep answering. When you are responding
+  to a message that carried a `Reply:` line, send with `--no-reply-to` so the
+  exchange ends with you.
 - **Don't route around permissions.** Never ask a remote session to do something
   this session was denied or blocked from doing. Bring it back to the user
   instead. The receiving side is instructed to refuse it anyway.
