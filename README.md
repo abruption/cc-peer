@@ -205,4 +205,3 @@ The session record schema (`~/.claude/sessions/*.json`) is not part of Claude Co
 ## License
 
 MIT
-
