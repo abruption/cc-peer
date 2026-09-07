@@ -52,14 +52,39 @@ Session records live in `~/.claude/sessions/<pid>.json` and carry the socket pat
 
 ## Install
 
-One file, standard library only, Python 3.9+.
+Python 3.9+, standard library only. No runtime, no package manager.
+
+```bash
+git clone https://github.com/abruption/cc-peer && cd cc-peer
+
+./install.sh                          # this machine
+./install.sh --host build-server      # a remote machine, over SSH
+./install.sh --host web-01 --host db  # several at once
+```
+
+That drops `cc_peer.py` and its [Claude Code skill](skills/cc-peer/SKILL.md) into
+`~/.claude/skills/cc-peer/`, and links `~/.local/bin/cc-peer`. Nothing else is touched.
+Remove it with `./install.sh --uninstall [--host ...]`.
+
+**Remote installs push the files over the SSH connection itself**, so the target needs
+no internet access — which matters, since air-gapped hosts are one of the reasons this
+exists. It needs `python3` and your SSH access, nothing more.
+
+Or skip the installer entirely and copy the one file:
 
 ```bash
 curl -O https://raw.githubusercontent.com/abruption/cc-peer/main/cc_peer.py
 chmod +x cc_peer.py
 ```
 
-The remote side needs `python3` and your SSH access. Nothing else.
+### The skill
+
+Installing puts a skill next to the script, so Claude picks the target session and
+writes the message itself when you ask it to reach a session on another box. The
+script keeps the deterministic part — resolving a session, writing the socket — and
+the skill only decides *what to send where*. Discovery leans on a session-record
+schema that isn't part of Claude Code's documented interface, so it is described in
+prose the agent can adapt rather than hardcoded logic that silently breaks.
 
 ## Usage
 
