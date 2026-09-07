@@ -26,6 +26,8 @@ from __future__ import annotations
 
 import argparse
 import base64
+import binascii
+import getpass
 import json
 import os
 import re
@@ -40,6 +42,11 @@ __version__ = "0.2.0"
 # Claude Code refuses a same-machine message once its serialized form passes
 # about a million characters, so fail here rather than at the far end.
 MAX_MESSAGE_CHARS = 1_000_000
+
+# Over SSH the message travels as a command-line argument, so it meets Linux's
+# MAX_ARG_STRLEN (128 KB per argument) long before the cap above. base64 costs
+# 4/3, and the rest of the command needs room, so keep well under it.
+MAX_REMOTE_MESSAGE_CHARS = 90_000
 CONNECT_TIMEOUT = 10.0
 DRAIN_TIMEOUT = 2.0
 DETECT_TIMEOUT = 3.0
@@ -156,6 +163,28 @@ def resolve_target(sessions: list[dict], target: str) -> dict:
     return matches[0]
 
 
+def check_message(text: str, remote: bool) -> None:
+    """Reject a message that can't be delivered, before anything is sent.
+
+    Kept out of post_to_socket so --dry-run and the remote path get the same
+    answer as a real send: a rehearsal that passes and a send that fails is
+    worse than no rehearsal.
+    """
+    if not text.strip():
+        raise CcPeerError("refusing to send an empty message")
+    if len(text) > MAX_MESSAGE_CHARS:
+        raise CcPeerError(
+            f"message is {len(text)} characters; the limit is {MAX_MESSAGE_CHARS}"
+        )
+    if remote and len(text) > MAX_REMOTE_MESSAGE_CHARS:
+        raise CcPeerError(
+            f"message is {len(text)} characters; over SSH the limit is "
+            f"{MAX_REMOTE_MESSAGE_CHARS}, because it travels as a command-line "
+            f"argument. Send it from a session on that machine to use the full "
+            f"{MAX_MESSAGE_CHARS}."
+        )
+
+
 def post_to_socket(socket_path: str, text: str) -> None:
     """Write one message to a session's inbox socket.
 
@@ -164,12 +193,7 @@ def post_to_socket(socket_path: str, text: str) -> None:
     connection that has not sent a complete line within 30 seconds, so the
     message is built before the socket is opened.
     """
-    if not text.strip():
-        raise CcPeerError("refusing to send an empty message")
-    if len(text) > MAX_MESSAGE_CHARS:
-        raise CcPeerError(
-            f"message is {len(text)} characters; the limit is {MAX_MESSAGE_CHARS}"
-        )
+    check_message(text, remote=False)
 
     payload = json.dumps(
         {"type": "user", "message": {"role": "user", "content": text}},
@@ -184,15 +208,20 @@ def post_to_socket(socket_path: str, text: str) -> None:
         except OSError as exc:
             raise CcPeerError(f"cannot reach inbox at {socket_path}: {exc}") from exc
 
-        conn.sendall((payload + "\n").encode("utf-8"))
-        # Half-close and wait for the far end, so a write that the session
-        # never read is reported here rather than silently dropped.
-        conn.shutdown(socket.SHUT_WR)
-        conn.settimeout(DRAIN_TIMEOUT)
         try:
-            conn.recv(1)
-        except OSError:
-            pass
+            conn.sendall((payload + "\n").encode("utf-8"))
+            # Half-close, then give the far end a moment before we drop the
+            # connection. Claude Code sends nothing back, so this confirms
+            # delivery no more than the write itself does — it only avoids
+            # closing so abruptly that a just-written line goes unread.
+            conn.shutdown(socket.SHUT_WR)
+            conn.settimeout(DRAIN_TIMEOUT)
+            try:
+                conn.recv(1)
+            except OSError:
+                pass
+        except OSError as exc:
+            raise CcPeerError(f"failed writing to {socket_path}: {exc}") from exc
     finally:
         conn.close()
 
@@ -256,7 +285,21 @@ def own_session() -> dict | None:
 
 
 def reply_line(explicit_host: str | None) -> str | None:
-    """The line to append, or None when there's nothing useful to say."""
+    """The line to append, or None when there's nothing useful to say.
+
+    The address has to be runnable as printed, which needs three things the
+    first version left out:
+
+    * the **user**, because the receiver otherwise connects as its own local
+      account — a worker running as `ubuntu` cannot reach a laptop's `abruptly`
+    * an **absolute script path**, because a non-interactive SSH session never
+      sources the profile that puts ~/.local/bin on PATH, so a bare `cc-peer`
+      is not found
+    * `--no-reply-to`, so answering an answer doesn't ping-pong
+
+    The username is the sender's; there's no guarantee the far side knows it,
+    but it is right whenever accounts match and strictly better than nothing.
+    """
     session = own_session()
     if session is None:
         return None
@@ -264,7 +307,12 @@ def reply_line(explicit_host: str | None) -> str | None:
     host = explicit_host or os.environ.get("CC_PEER_REPLY_HOST") or detect_reply_host()
     if not host:
         return None
-    return f"---\nReply: cc-peer send --host {host} --to {name}"
+    if "@" not in host:
+        host = f"{getpass.getuser()}@{host}"
+    return (
+        "---\nReply: python3 ~/.claude/skills/cc-peer/cc_peer.py send "
+        f"--host {host} --to {shlex.quote(name)} --no-reply-to"
+    )
 
 
 # --------------------------------------------------------------------------
@@ -391,7 +439,10 @@ def cmd_list(args: argparse.Namespace) -> int:
 
 def read_message(args: argparse.Namespace) -> str:
     if args.b64 is not None:
-        return base64.b64decode(args.b64).decode("utf-8")
+        try:
+            return base64.b64decode(args.b64, validate=True).decode("utf-8")
+        except (binascii.Error, UnicodeDecodeError) as exc:
+            raise CcPeerError(f"--b64 is not valid base64-encoded UTF-8: {exc}") from exc
     if args.message is None or args.message == "-":
         return sys.stdin.read()
     return args.message
@@ -399,6 +450,11 @@ def read_message(args: argparse.Namespace) -> str:
 
 def cmd_send(args: argparse.Namespace) -> int:
     text = read_message(args)
+
+    # Check the body the user actually wrote. Doing this after the reply line
+    # is appended would let an empty message through on the strength of the
+    # line alone — which still starts a turn on the other machine.
+    check_message(text, remote=bool(args.host))
 
     # Built here, before dispatch: detection has to run on the sender's machine.
     # Doing it on the far side would advertise the receiver's own address back
@@ -408,6 +464,14 @@ def cmd_send(args: argparse.Namespace) -> int:
         line = reply_line(args.reply_to)
         if line:
             text = text.rstrip("\n") + "\n\n" + line
+        elif (args.reply_to or os.environ.get("CC_PEER_REPLY_HOST")) and not args.json:
+            # A reply address names a session, and outside one there is no name
+            # to give. Say so rather than dropping the flag without a word.
+            print(
+                "cc-peer: no reply address sent — a reply needs a session to name, "
+                "and this isn't running inside one",
+                file=sys.stderr,
+            )
 
     if args.host:
         encoded = base64.b64encode(text.encode("utf-8")).decode("ascii")
