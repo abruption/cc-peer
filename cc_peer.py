@@ -238,9 +238,12 @@ def post_to_socket(socket_path: str, text: str) -> None:
 
 def is_tailnet_address(candidate: str) -> bool:
     parts = candidate.split(".")
-    if len(parts) != 4 or parts[0] != "100" or not parts[1].isdigit():
+    if len(parts) != 4 or not all(p.isdigit() and len(p) <= 3 for p in parts):
         return False
-    return int(parts[1]) in TAILNET_SECOND_OCTET
+    octets = [int(p) for p in parts]
+    if any(o > 255 for o in octets):
+        return False
+    return octets[0] == 100 and octets[1] in TAILNET_SECOND_OCTET
 
 
 def _run(command: list[str]) -> str:

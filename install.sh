@@ -129,9 +129,12 @@ remote_run() {
 
 if [ -n "$HOSTS" ]; then
     status=0
+    set -f            # no globbing: --host '*' must not expand
+    # shellcheck disable=SC2086 # deliberate split: HOSTS is a list we built
     for host in $HOSTS; do
         remote_run "$host" || { echo "install.sh: failed on $host" >&2; status=1; }
     done
+    set +f
     exit "$status"
 fi
 
