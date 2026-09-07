@@ -29,6 +29,7 @@ import base64
 import json
 import os
 import re
+import shlex
 import socket
 import subprocess
 import sys
@@ -272,13 +273,50 @@ def reply_line(explicit_host: str | None) -> str | None:
 # --------------------------------------------------------------------------
 
 
+# ssh options that make ssh run a command on *this* machine. A host or an
+# --ssh-opt value carrying one of these turns "message a session" into "run
+# whatever I say, locally". ProxyJump is deliberately absent: it takes a host,
+# not a command, and is the right way to reach a box behind a bastion.
+LOCAL_EXEC_SSH_OPTIONS = ("proxycommand", "localcommand", "permitlocalcommand")
+
+
+def check_ssh_argument(value: str, flag: str) -> None:
+    """Refuse a value that would make ssh do something other than connect.
+
+    ssh has no `--` separator, so a leading dash turns a destination into a
+    flag. Hosts never legitimately start with one, while --ssh-opt values
+    always do — so the leading-dash rule applies only to the host, and both
+    are checked for options that execute a local command.
+    """
+    if flag == "--host" and value.startswith("-"):
+        raise CcPeerError(
+            f"--host must not start with '-' (ssh would read {value!r} as an option)"
+        )
+    collapsed = value.lower().replace(" ", "").replace("=", "")
+    for banned in LOCAL_EXEC_SSH_OPTIONS:
+        if banned in collapsed:
+            raise CcPeerError(
+                f"{flag} must not carry {banned} — it would run a command on this "
+                f"machine. Put it in ~/.ssh/config if you really need it."
+            )
+
+
 def run_remote(host: str, argv: list[str], ssh_opts: list[str]) -> dict:
+    check_ssh_argument(host, "--host")
+    for opt in ssh_opts:
+        check_ssh_argument(opt, "--ssh-opt")
+
     try:
         source = Path(__file__).resolve().read_text()
     except OSError as exc:  # pragma: no cover - only when run from a pipe
         raise CcPeerError(f"cannot read own source to send to {host}: {exc}") from exc
 
-    command = ["ssh", *ssh_opts, host, "python3", "-", *argv, "--json"]
+    # ssh joins everything after the destination with spaces and hands the
+    # result to the remote *shell*, so an argv list is not the protection it
+    # looks like: a metacharacter in any element executes over there. Build
+    # the remote command as one already-quoted string instead.
+    remote = " ".join(shlex.quote(a) for a in ["python3", "-", *argv, "--json"])
+    command = ["ssh", *ssh_opts, host, remote]
     try:
         completed = subprocess.run(
             command, input=source, text=True, capture_output=True, timeout=120
@@ -287,6 +325,8 @@ def run_remote(host: str, argv: list[str], ssh_opts: list[str]) -> dict:
         raise CcPeerError("ssh not found on PATH") from exc
     except subprocess.TimeoutExpired as exc:
         raise CcPeerError(f"ssh to {host} timed out") from exc
+    except OSError as exc:
+        raise CcPeerError(f"could not run ssh to {host}: {exc}") from exc
 
     stdout = completed.stdout.strip()
     if not stdout:

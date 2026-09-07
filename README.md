@@ -100,7 +100,7 @@ git log --oneline -5 | cc-peer send --host web-01 --to api-worker -   # stdin
 
 cc-peer send --host web-01 --to api-worker --dry-run "x"   # resolve only
 cc-peer list --host web-01 --json             # machine-readable
-cc-peer send --host web-01 --ssh-opt -p --ssh-opt 2222 --to api-worker "..."
+cc-peer send --host web-01 --ssh-opt=-p --ssh-opt=2222 --to api-worker "..."   # note the '='
 
 # Replies. Sends carry a return address by default, resolved from this machine's
 # tailnet address and the session cc-peer is running inside.
@@ -154,6 +154,7 @@ That last row matters: a message posted to the inbox [cannot answer a permission
   anyone who can reply could already have sent unprompted. What it adds is *knowing* that.
 - **No discovery across a bastion.** `--host` is a single SSH hop; chain it yourself with an SSH config `ProxyJump`.
 - **Same OS user.** The socket is restricted to the user that owns the session, so `cc-peer` gives you nothing you couldn't already do with your own shell on that host. It is not a privilege-escalation path — but it does mean anyone with that shell can start a turn.
+- **`--host` and `--ssh-opt` are as trusted as your ssh config.** They are handed to `ssh`, so whoever controls them controls where you connect. Values that would make ssh run a local command (`ProxyCommand` and friends) are refused, and a `--host` starting with `-` is rejected outright — but if you allowlist `cc-peer` for an agent, treat it as granting SSH, not just messaging. Message bodies and session names carry no such risk: they are quoted before they reach any shell.
 - **Linux and macOS only.** Native Windows uses named pipes with a mandatory auth line; unsupported here.
 
 ## Verified
