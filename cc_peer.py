@@ -287,11 +287,66 @@ def own_session() -> dict | None:
     return None
 
 
-def reply_line(explicit_host: str | None) -> str | None:
-    """The line to append, or None when there's nothing useful to say.
+def sender_identity(explicit_host: str | None) -> tuple[str, str | None] | None:
+    """(session name, reachable address) for the session we're running in.
 
-    The address has to be runnable as printed, which needs three things the
-    first version left out:
+    Both the From: header and the Reply: line are built from this, so they
+    can't drift apart. None outside a session, where there is no name to give.
+    """
+    session = own_session()
+    if session is None:
+        return None
+    name = session["name"] or str(session["pid"])
+    host = explicit_host or os.environ.get("CC_PEER_REPLY_HOST") or detect_reply_host()
+    if host and "@" not in host:
+        host = f"{getpass.getuser()}@{host}"
+    return name, host
+
+
+def from_header(explicit_host: str | None) -> str | None:
+    """Who is speaking.
+
+    Claude Code records an arriving peer message with `from: "unknown"` when
+    it was posted to the socket directly, so without this the receiver has no
+    idea who is asking — and it is told to treat the message as a teammate's
+    request. Separate from the reply address on purpose: knowing the sender
+    stays useful when answering isn't possible.
+    """
+    identity = sender_identity(explicit_host)
+    if identity is None:
+        return None
+    name, host = identity
+    # Fall back to the local hostname so this line survives even when no
+    # tailnet address turns up; it is for reading, not for connecting.
+    where = host or f"{getpass.getuser()}@{socket.gethostname()}"
+    return f"From: {where} ({name})"
+
+
+def wrap_message(
+    text: str, explicit_host: str | None, with_from: bool, with_reply: bool
+) -> str:
+    """Put the body in an envelope: who sent it, and how to answer.
+
+    Deliberately minimal. Claude Code already prefaces an arriving peer
+    message and appends its own guidance about what a peer may and may not
+    ask for — repeating any of that here would duplicate it in every message
+    and compound with each hop. The two facts it *doesn't* have are the
+    sender's identity and a working return address.
+    """
+    header = from_header(explicit_host) if with_from else None
+    footer = reply_line(explicit_host) if with_reply else None
+    body = text.strip("\n")
+    parts = ([header, ""] if header else []) + [body]
+    if footer:
+        parts += ["", "---", footer]
+    return "\n".join(parts)
+
+
+def reply_line(explicit_host: str | None) -> str | None:
+    """How to answer, as a command that runs verbatim.
+
+    Three things the first version left out, each of which broke it in
+    practice:
 
     * the **user**, because the receiver otherwise connects as its own local
       account — a worker running as `ubuntu` cannot reach a laptop's `abruptly`
@@ -303,17 +358,14 @@ def reply_line(explicit_host: str | None) -> str | None:
     The username is the sender's; there's no guarantee the far side knows it,
     but it is right whenever accounts match and strictly better than nothing.
     """
-    session = own_session()
-    if session is None:
+    identity = sender_identity(explicit_host)
+    if identity is None:
         return None
-    name = session["name"] or str(session["pid"])
-    host = explicit_host or os.environ.get("CC_PEER_REPLY_HOST") or detect_reply_host()
+    name, host = identity
     if not host:
         return None
-    if "@" not in host:
-        host = f"{getpass.getuser()}@{host}"
     return (
-        "---\nReply: python3 ~/.claude/skills/cc-peer/cc_peer.py send "
+        "Reply: python3 ~/.claude/skills/cc-peer/cc_peer.py send "
         f"--host {host} --to {shlex.quote(name)} --no-reply-to"
     )
 
@@ -461,13 +513,21 @@ def cmd_send(args: argparse.Namespace) -> int:
 
     # Built here, before dispatch: detection has to run on the sender's machine.
     # Doing it on the far side would advertise the receiver's own address back
-    # at it. The --b64 path is this script re-running remotely, where the line
-    # is already part of the payload.
-    if args.b64 is None and not args.no_reply_to:
-        line = reply_line(args.reply_to)
-        if line:
-            text = text.rstrip("\n") + "\n\n" + line
-        elif (args.reply_to or os.environ.get("CC_PEER_REPLY_HOST")) and not args.json:
+    # at it. The --b64 path is this script re-running remotely, where the
+    # envelope is already part of the payload.
+    if args.b64 is None:
+        text = wrap_message(
+            text,
+            explicit_host=args.reply_to,
+            with_from=not args.no_from,
+            with_reply=not args.no_reply_to,
+        )
+        if (
+            not args.no_reply_to
+            and reply_line(args.reply_to) is None
+            and (args.reply_to or os.environ.get("CC_PEER_REPLY_HOST"))
+            and not args.json
+        ):
             # A reply address names a session, and outside one there is no name
             # to give. Say so rather than dropping the flag without a word.
             print(
@@ -542,6 +602,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sending.add_argument(
         "--no-reply-to", action="store_true", help="send without a reply address"
+    )
+    sending.add_argument(
+        "--no-from", action="store_true", help="send without the From: header"
     )
     sending.add_argument("--dry-run", action="store_true", help="resolve the target, send nothing")
     sending.set_defaults(func=cmd_send)

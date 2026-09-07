@@ -58,6 +58,11 @@ printf '%s' "$MESSAGE" | python3 cc_peer.py send --host <ssh-host> --to <name> -
 **4. Report honestly.** The command prints `Posted to <name>'s inbox`. That means
 the socket write succeeded — **not** that Claude read it. See below.
 
+You don't need to introduce yourself in the text. Every send opens with
+`From: <user>@<host> (<session>)`, filled in automatically — Claude Code records
+socket-posted messages as coming from `unknown`, so this is the only thing that
+tells the receiver who is asking.
+
 ## Answering a message you received
 
 A message from another machine ends with its own return address:
