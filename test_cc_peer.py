@@ -168,6 +168,57 @@ class ReplyLine(unittest.TestCase):
             self.assertIsNone(cc_peer.reply_line(None))
 
 
+class Envelope(unittest.TestCase):
+    """From: exists because Claude Code records socket-posted messages with
+    origin.from = "unknown" — the receiver otherwise cannot tell who asked."""
+
+    SESSION = {"pid": 42, "name": "documents-ed", "reachable": True}
+
+    def wrap(self, body="hello", with_from=True, with_reply=True, host="100.64.0.1"):
+        with mock.patch.object(cc_peer, "own_session", return_value=self.SESSION), \
+             mock.patch.object(cc_peer, "detect_reply_host", return_value=host), \
+             mock.patch.object(cc_peer.getpass, "getuser", return_value="alice"), \
+             mock.patch.dict(os.environ, {}, clear=True):
+            return cc_peer.wrap_message(body, None, with_from, with_reply)
+
+    def test_default_carries_sender_and_reply(self):
+        out = self.wrap()
+        self.assertTrue(out.startswith("From: alice@100.64.0.1 (documents-ed)"))
+        self.assertIn("hello", out)
+        self.assertIn("Reply:", out)
+
+    def test_from_survives_no_reply_to(self):
+        # Knowing who sent something stays useful when you can't answer it.
+        out = self.wrap(with_reply=False)
+        self.assertIn("From: alice@100.64.0.1", out)
+        self.assertNotIn("Reply:", out)
+
+    def test_no_from_leaves_the_body_alone(self):
+        self.assertEqual(self.wrap(with_from=False, with_reply=False), "hello")
+
+    def test_does_not_repeat_what_claude_code_already_adds(self):
+        # Claude Code prefaces peer messages and appends its own guidance;
+        # duplicating either would compound with every hop.
+        out = self.wrap()
+        self.assertNotIn("Another Claude session", out)
+        self.assertNotIn("permission laundering", out)
+
+    def test_from_falls_back_to_hostname_without_a_tailnet_address(self):
+        out = self.wrap(host=None)
+        self.assertIn("From: alice@", out)
+        self.assertNotIn("Reply:", out)   # nothing runnable to offer
+
+    def test_no_envelope_outside_a_session(self):
+        with mock.patch.object(cc_peer, "own_session", return_value=None):
+            self.assertEqual(cc_peer.wrap_message("hello", None, True, True), "hello")
+
+    def test_body_is_not_duplicated_or_reordered(self):
+        out = self.wrap(body="line one\nline two")
+        self.assertEqual(out.count("line one"), 1)
+        self.assertLess(out.index("From:"), out.index("line one"))
+        self.assertLess(out.index("line two"), out.index("Reply:"))
+
+
 class OwnSession(unittest.TestCase):
     def test_reads_pid_from_the_exported_socket_path(self):
         rows = [{"pid": 4011, "name": "worker", "reachable": True}]

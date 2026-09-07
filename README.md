@@ -102,10 +102,11 @@ cc-peer send --host web-01 --to api-worker --dry-run "x"   # resolve only
 cc-peer list --host web-01 --json             # machine-readable
 cc-peer send --host web-01 --ssh-opt=-p --ssh-opt=2222 --to api-worker "..."   # note the '='
 
-# Replies. Sends carry a return address by default, resolved from this machine's
-# tailnet address and the session cc-peer is running inside.
-cc-peer send --host web-01 --to api-worker --no-reply-to "..."        # don't advertise one
-cc-peer send --host web-01 --to api-worker --reply-to 100.64.0.5 "..." # say it yourself
+# Envelope. Sends carry who they're from and how to answer, both resolved from
+# the session cc-peer is running inside.
+cc-peer send --host web-01 --to api-worker --no-reply-to "..."         # no return address
+cc-peer send --host web-01 --to api-worker --no-from "..."             # no From: header
+cc-peer send --host web-01 --to api-worker --reply-to 100.64.0.5 "..." # state the address
 ```
 
 Exit codes: `0` posted, `1` error, `2` no such session.
@@ -148,6 +149,11 @@ That last row matters: a message posted to the inbox [cannot answer a permission
 
 ## Limits
 
+- **The receiver is told who sent the message.** Claude Code records a socket-posted message
+  with `from: "unknown"` — it has a field for the sender and nothing to put in it. Sends
+  therefore open with `From: <user>@<host> (<session>)`. What Claude Code already supplies,
+  cc-peer does not repeat: it prefaces peer messages and appends its own guidance about what
+  a peer may ask for, so duplicating either would compound with every hop.
 - **Replies depend on SSH working the other way.** Sends append a `Reply:` line naming this
   machine's tailnet address and this session, so the receiver can answer — but only if that
   machine can SSH back. When it can't, neither side is told. The line grants nothing on its own:
