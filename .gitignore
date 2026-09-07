@@ -1,3 +1,7 @@
 __pycache__/
 *.pyc
 .DS_Store
+
+# local-only project notes (not published)
+CLAUDE.md
+.claude/

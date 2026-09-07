@@ -119,6 +119,15 @@ For a worker meant to take messages unattended, set this in its settings:
 
 Or start it with `--settings '{"crossSessionInbound":"accept"}'`. Do this deliberately: it means anything that can write to that socket can start a turn on that machine.
 
+Two things worth knowing before you set it:
+
+- **It applies to sessions that are already running.** No restart needed. Measured on two sessions
+  up for 144h and 4h that predated the setting entirely — both took a posted message ~3s later with
+  no approval dialog, while still showing `⏵⏵ bypass permissions on`.
+- **User settings are per OS user, not per session.** Putting `accept` in `~/.claude/settings.json`
+  opens *every* session that user runs, not just the worker you meant. Scope it with project
+  settings or `--settings` if you want one session to accept and the rest to keep asking.
+
 ## Why not `tmux send-keys`?
 
 `ssh host 'tmux send-keys -t sess "msg" Enter'` needs no script, and for a quick nudge it's fine. It breaks down as soon as timing or payload get interesting:
@@ -141,7 +150,16 @@ That last row matters: a message posted to the inbox [cannot answer a permission
 
 ## Verified
 
-Claude Code **v2.1.263**, macOS 15 (Apple silicon) and Ubuntu 24.04 (arm64), over Tailscale SSH.
+Claude Code **v2.1.263** across four machines over Tailscale SSH — two macOS 26 (Apple silicon) and
+two Ubuntu 24.04 (arm64, Oracle Ampere A1 in separate regions). What was actually exercised:
+
+- Posting from macOS to Linux sessions in two regions; each landed in the receiving transcript as
+  `type: user` with `origin.kind: "peer"`.
+- Payload integrity — quotes, backticks, `$HOME`, and emoji arrive byte-for-byte.
+- The held path: a bypass-mode session raised an approval dialog, then logged
+  `Released 1 held cross-session message` once approved.
+- Both socket layouts in the wild: `/tmp/cc-socks/` on one Ubuntu host, `/run/user/1001/cc-socks/`
+  on another running the same build.
 
 The session record schema (`~/.claude/sessions/*.json`) is not part of Claude Code's documented interface and can change between releases. The socket protocol is documented; discovery is inference. If a release moves things, `cc-peer list --all` is the first thing to run.
 
