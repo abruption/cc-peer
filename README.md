@@ -211,7 +211,7 @@ That last row matters: a message posted to the inbox [cannot answer a permission
 - **No discovery across a bastion.** `--host` is a single SSH hop; chain it yourself with an SSH config `ProxyJump`.
 - **Same OS user.** The socket is restricted to the user that owns the session, so `cc-peer` gives you nothing you couldn't already do with your own shell on that host. It is not a privilege-escalation path — but it does mean anyone with that shell can start a turn.
 - **`--host` and `--ssh-opt` are as trusted as your ssh config.** They are handed to `ssh`, so whoever controls them controls where you connect. Values that would make ssh run a local command (`ProxyCommand` and friends) are refused, and a `--host` starting with `-` is rejected outright — but if you allowlist `cc-peer` for an agent, treat it as granting SSH, not just messaging. Message bodies and session names carry no such risk: they are quoted before they reach any shell.
-- **Linux and macOS only.** Native Windows uses named pipes with a mandatory auth line; unsupported here.
+- **Windows support.** Native Windows sessions use named pipes instead of Unix sockets, and require an auth line before the message. Both are handled automatically — the auth token is read from the session's `.key` file. `install.sh` is POSIX sh and won't run on Windows; use `pip install cc-peer` there instead.
 
 ## Tests
 
@@ -228,8 +228,9 @@ line's user and absolute path. A regression in any of those is silent otherwise.
 
 ## Verified
 
-Claude Code **v2.1.263** across four machines over Tailscale SSH — two macOS 26 (Apple silicon) and
-two Ubuntu 24.04 (arm64, Oracle Ampere A1 in separate regions). What was actually exercised:
+Claude Code **v2.1.263** across five machines over Tailscale SSH — two macOS 26 (Apple silicon),
+two Ubuntu 24.04 (arm64, Oracle Ampere A1 in separate regions), and one Windows 10 22H2. What was
+actually exercised:
 
 - Posting from macOS to Linux sessions in two regions; each landed in the receiving transcript as
   `type: user` with `origin.kind: "peer"`.
@@ -238,6 +239,8 @@ two Ubuntu 24.04 (arm64, Oracle Ampere A1 in separate regions). What was actuall
   `Released 1 held cross-session message` once approved.
 - Both socket layouts in the wild: `/tmp/cc-socks/` on one Ubuntu host, `/run/user/1001/cc-socks/`
   on another running the same build.
+- Windows named pipe transport (`\\.\pipe\LOCAL\cc-msg-<hash>`) with mandatory auth line read from
+  the session's `.key` file. `list`, `send`, and `--host` all verified on the Windows machine.
 
 The session record schema (`~/.claude/sessions/*.json`) is not part of Claude Code's documented interface and can change between releases. The socket protocol is documented; discovery is inference. If a release moves things, `cc-peer list --all` is the first thing to run.
 
