@@ -367,8 +367,10 @@ def reply_line(explicit_host: str | None) -> str | None:
     name, host = identity
     if not host:
         return None
+    script = Path(__file__).resolve()
+    script_str = str(script) if script.is_file() else '~/.claude/skills/cc-peer/cc_peer.py'
     return (
-        "Reply: python3 ~/.claude/skills/cc-peer/cc_peer.py send "
+        f"Reply: python3 {script_str} send "
         f"--host {host} --to {shlex.quote(name)} --no-reply-to"
     )
 

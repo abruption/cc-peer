@@ -10,6 +10,7 @@ couldn't be run. The point is that the next release breaks loudly.
 import base64
 import os
 import unittest
+from pathlib import Path
 from unittest import mock
 
 import cc_peer
@@ -166,6 +167,20 @@ class ReplyLine(unittest.TestCase):
              mock.patch.object(cc_peer, "detect_reply_host", return_value=None), \
              mock.patch.dict(os.environ, {}, clear=True):
             self.assertIsNone(cc_peer.reply_line(None))
+
+    def test_uses_actual_file_path(self):
+        fake_path = "/opt/custom/cc_peer.py"
+        with mock.patch.object(cc_peer, "__file__", fake_path), \
+             mock.patch("pathlib.Path.is_file", return_value=True), \
+             mock.patch("pathlib.Path.resolve", return_value=Path(fake_path)):
+            line = self.line()
+        self.assertIn(fake_path, line)
+        self.assertNotIn("~/.claude/skills", line)
+
+    def test_falls_back_for_stdin(self):
+        with mock.patch.object(cc_peer, "__file__", "<stdin>"):
+            line = self.line()
+        self.assertIn("~/.claude/skills/cc-peer/cc_peer.py", line)
 
 
 class Envelope(unittest.TestCase):
