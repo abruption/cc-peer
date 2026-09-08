@@ -24,8 +24,32 @@ UNINSTALL=0
 die() { echo "install.sh: $*" >&2; exit 1; }
 
 usage() {
-    sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
+    cat <<'USAGE'
+cc-peer installer.
+
+  ./install.sh                      install here
+  ./install.sh --host web-01        install on a remote machine over SSH
+  ./install.sh --host a --host b    ...on several
+  ./install.sh --uninstall          remove it
+
+Installs cc_peer.py and its Claude Code skill into ~/.claude/skills/cc-peer,
+and links ~/.local/bin/cc-peer. Nothing else is touched.
+
+Remote installs push the files over the SSH connection itself, so the remote
+machine needs no internet access.
+USAGE
     exit "${1:-0}"
+}
+
+validate_host() {
+    case "$1" in
+        -*) die "--host must not start with '-' (ssh would read it as an option)" ;;
+    esac
+    _lower=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -d ' =')
+    case "$_lower" in
+        *proxycommand*|*permitlocalcommand*|*localcommand*)
+            die "--host must not carry proxy/local command options" ;;
+    esac
 }
 
 while [ $# -gt 0 ]; do
@@ -53,24 +77,33 @@ fetch() {
     fi
 }
 
+# Resolve the directory containing this script, if it is a real file.
+# When run via curl|sh, $0 is "sh" or a pipe — not a file we can dirname.
+if [ -f "$0" ]; then
+    src_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd 2>/dev/null) || src_dir=""
+else
+    src_dir=""
+fi
+
 install_here() {
     command -v python3 >/dev/null 2>&1 || die "python3 not found"
 
     mkdir -p "$SKILL_DIR" "$BIN_DIR"
 
-    # Prefer files sitting next to this script (a clone, or a remote push);
-    # fall back to downloading them.
-    src_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd 2>/dev/null) || src_dir=""
+    # Always copy or fetch — re-running upgrades rather than skipping.
     if [ -n "$src_dir" ] && [ -f "$src_dir/cc_peer.py" ]; then
         cp "$src_dir/cc_peer.py" "$SKILL_DIR/cc_peer.py"
         if [ -f "$src_dir/skills/cc-peer/SKILL.md" ]; then
             cp "$src_dir/skills/cc-peer/SKILL.md" "$SKILL_DIR/SKILL.md"
         elif [ -f "$src_dir/SKILL.md" ]; then
             cp "$src_dir/SKILL.md" "$SKILL_DIR/SKILL.md"
+        else
+            fetch "$RAW/skills/cc-peer/SKILL.md" "$SKILL_DIR/SKILL.md"
         fi
+    else
+        fetch "$RAW/cc_peer.py" "$SKILL_DIR/cc_peer.py"
+        fetch "$RAW/skills/cc-peer/SKILL.md" "$SKILL_DIR/SKILL.md"
     fi
-    [ -f "$SKILL_DIR/cc_peer.py" ] || fetch "$RAW/cc_peer.py" "$SKILL_DIR/cc_peer.py"
-    [ -f "$SKILL_DIR/SKILL.md" ] || fetch "$RAW/skills/cc-peer/SKILL.md" "$SKILL_DIR/SKILL.md"
 
     chmod +x "$SKILL_DIR/cc_peer.py"
     ln -sf "$SKILL_DIR/cc_peer.py" "$BIN_DIR/cc-peer"
@@ -98,16 +131,31 @@ uninstall_here() {
 
 remote_run() {
     host=$1
+    validate_host "$host"
+
     if [ "$UNINSTALL" -eq 1 ]; then
         ssh "$host" 'rm -f "$HOME/.local/bin/cc-peer"; rm -rf "$HOME/.claude/skills/cc-peer"; echo "removed cc-peer from $(hostname)"'
         return
     fi
 
-    src_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-    py="$src_dir/cc_peer.py"
-    skill="$src_dir/skills/cc-peer/SKILL.md"
-    [ -f "$py" ] || die "cc_peer.py not found next to this script; run from a clone"
-    [ -f "$skill" ] || die "skills/cc-peer/SKILL.md not found next to this script"
+    # Locate source files: next to this script, or fetch to a temp dir.
+    if [ -n "$src_dir" ] && [ -f "$src_dir/cc_peer.py" ]; then
+        py="$src_dir/cc_peer.py"
+        if [ -f "$src_dir/skills/cc-peer/SKILL.md" ]; then
+            skill="$src_dir/skills/cc-peer/SKILL.md"
+        elif [ -f "$src_dir/SKILL.md" ]; then
+            skill="$src_dir/SKILL.md"
+        else
+            die "SKILL.md not found next to this script"
+        fi
+    else
+        tmp_dir=$(mktemp -d)
+        trap 'rm -rf "$tmp_dir"' EXIT
+        fetch "$RAW/cc_peer.py" "$tmp_dir/cc_peer.py"
+        fetch "$RAW/skills/cc-peer/SKILL.md" "$tmp_dir/SKILL.md"
+        py="$tmp_dir/cc_peer.py"
+        skill="$tmp_dir/SKILL.md"
+    fi
 
     {
         echo 'set -eu'
