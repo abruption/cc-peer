@@ -61,7 +61,31 @@ the socket write succeeded — **not** that Claude read it. See below.
 You don't need to introduce yourself in the text. Every send opens with
 `From: <user>@<host> (<session>)`, filled in automatically — Claude Code records
 socket-posted messages as coming from `unknown`, so this is the only thing that
-tells the receiver who is asking.
+tells the receiver who is asking. Suppress it with `--no-from` when identity
+would be noise.
+
+### Useful flags
+
+| Flag | When to use |
+| :-- | :-- |
+| `--dry-run` | Resolve the target without actually posting — verify before a real send. |
+| `--no-from` | Omit the `From:` header. |
+| `--no-reply-to` | Omit the `Reply:` line — use when replying so the exchange doesn't loop. |
+| `--reply-to <addr>` | Explicitly set the reply address (IP or `user@host`). |
+| `--ssh-opt=<opt>` | Pass an extra option to `ssh`. Note the `=` — repeat for each option, e.g. `--ssh-opt=-p --ssh-opt=2222` for a non-default port. |
+| `--json` | Machine-readable JSON output. |
+| `--all` | (list) Include stale records and sessions with no inbox. |
+
+### Checking and updating versions
+
+`list --host` prints a version-mismatch warning when the remote runs a different
+version. To act on it:
+
+```bash
+python3 cc_peer.py update --check              # is there a newer release?
+python3 cc_peer.py update                      # update this machine
+python3 cc_peer.py update --host <ssh-host>    # report what the remote has
+```
 
 ## Answering a message you received
 
@@ -124,3 +148,5 @@ spends tokens to say nothing.
 | Session listed but `[no inbox]` | It's alive but bound no socket — it can't receive messages at all. |
 | Posted, but nothing happened over there | Almost always held for approval. Check that session's screen. |
 | `ssh ... timed out` | Plain SSH problem; verify with `ssh <host> true` first. |
+| SSH on a non-default port | Use `--ssh-opt=-p --ssh-opt=2222` (note the `=`). |
+| `list --host` says version mismatch | Run `cc-peer update` locally, or `install.sh --host` to push. |

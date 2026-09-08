@@ -151,7 +151,15 @@ cc-peer send --host web-01 --to api-worker --no-from "..."             # no From
 cc-peer send --host web-01 --to api-worker --reply-to 100.64.0.5 "..." # state the address
 ```
 
-Exit codes: `0` posted, `1` error, `2` no such session.
+Exit codes: `0` posted, `1` error, `2` no such session, `130` interrupted (Ctrl-C).
+
+### Environment variables
+
+| Variable | Effect |
+| :-- | :-- |
+| `CC_PEER_REPLY_HOST` | Override the reply address. Resolution order: `--reply-to` flag → `CC_PEER_REPLY_HOST` → auto-detected Tailscale IP. Useful on VPNs where Tailscale isn't installed — set it once instead of passing `--reply-to` on every call. |
+| `CLAUDE_CONFIG_DIR` | Where Claude Code keeps its config (default `~/.claude`). Respected by `cc-peer list` for session discovery and by `install.sh` for skill placement. |
+| `ANTHROPIC_CONFIG_DIR` | Fallback if `CLAUDE_CONFIG_DIR` is unset. |
 
 ## The receiving side decides what happens next
 
