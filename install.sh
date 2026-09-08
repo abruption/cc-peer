@@ -47,7 +47,7 @@ validate_host() {
     esac
     _lower=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -d ' =')
     case "$_lower" in
-        *proxycommand*|*localcommand*|*permitlocalcommand*)
+        *proxycommand*|*permitlocalcommand*|*localcommand*)
             die "--host must not carry proxy/local command options" ;;
     esac
 }
