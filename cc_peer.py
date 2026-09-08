@@ -81,15 +81,27 @@ def sessions_dir() -> Path:
     return Path.home() / ".claude" / "sessions"
 
 
+IS_WINDOWS = sys.platform == "win32"
+
+
 def pid_alive(pid: int) -> bool:
     if pid <= 1:
         return False
+    if IS_WINDOWS:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            return False
+        kernel32.CloseHandle(handle)
+        return True
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
     except PermissionError:
-        return True  # exists, just not ours to signal
+        return True
     return True
 
 
@@ -113,7 +125,7 @@ def discover(include_unreachable: bool = False) -> list[dict]:
         if not record_file.stem.isdigit():
             continue
         try:
-            record = json.loads(record_file.read_text())
+            record = json.loads(record_file.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
 
@@ -123,9 +135,10 @@ def discover(include_unreachable: bool = False) -> list[dict]:
 
         sock = record.get("messagingSocketPath") or ""
         alive = pid_alive(pid)
-        # A live session without a bound socket has no inbox and cannot be
-        # messaged; a dead one leaves its record behind until it is swept.
-        has_inbox = bool(sock) and Path(sock).is_socket()
+        if IS_WINDOWS:
+            has_inbox = bool(sock) and sock.startswith("\\\\.\\pipe\\")
+        else:
+            has_inbox = bool(sock) and Path(sock).is_socket()
 
         entry = {
             "pid": pid,
@@ -192,14 +205,58 @@ def check_message(text: str, remote: bool) -> None:
         )
 
 
-def post_to_socket(socket_path: str, text: str) -> None:
+def _read_win_auth(pid: int) -> str | None:
+    """Read the Windows auth key for a session and return the auth JSON line."""
+    directory = sessions_dir()
+    for key_file in directory.glob(f"{pid}.*.key"):
+        try:
+            data = json.loads(key_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        auth = {"type": "auth"}
+        auth.update(data)
+        return json.dumps(auth, ensure_ascii=False)
+    return None
+
+
+def _post_to_pipe(pipe_path: str, pid: int, text: str) -> None:
+    """Write one message to a Windows named pipe inbox."""
+    check_message(text, remote=False)
+
+    auth_line = _read_win_auth(pid)
+    if auth_line is None:
+        raise CcPeerError(f"no auth key found for pid {pid} — cannot post to Windows pipe")
+
+    payload = json.dumps(
+        {"type": "user", "message": {"role": "user", "content": text}},
+        ensure_ascii=False,
+    )
+
+    import time
+    try:
+        with open(pipe_path, "wb") as pipe:
+            pipe.write((auth_line + "\n").encode("utf-8"))
+            pipe.write((payload + "\n").encode("utf-8"))
+            pipe.flush()
+            time.sleep(DRAIN_TIMEOUT)
+    except OSError as exc:
+        raise CcPeerError(f"cannot reach inbox at {pipe_path}: {exc}") from exc
+
+
+def post_to_socket(socket_path: str, text: str, pid: int = 0) -> None:
     """Write one message to a session's inbox socket.
 
     On macOS and Linux the {"type":"auth",...} line the docs describe is
-    optional, so this sends the message on its own. Claude Code closes a
-    connection that has not sent a complete line within 30 seconds, so the
-    message is built before the socket is opened.
+    optional, so this sends the message on its own. On Windows, auth is
+    mandatory — the token is read from the session's .key file and sent
+    before the message. Claude Code closes a connection that has not sent
+    a complete line within 30 seconds, so the message is built before the
+    socket is opened.
     """
+    if IS_WINDOWS and socket_path.startswith("\\\\.\\pipe\\"):
+        _post_to_pipe(socket_path, pid, text)
+        return
+
     check_message(text, remote=False)
 
     payload = json.dumps(
@@ -217,10 +274,6 @@ def post_to_socket(socket_path: str, text: str) -> None:
 
         try:
             conn.sendall((payload + "\n").encode("utf-8"))
-            # Half-close, then give the far end a moment before we drop the
-            # connection. Claude Code sends nothing back, so this confirms
-            # delivery no more than the write itself does — it only avoids
-            # closing so abruptly that a just-written line goes unread.
             conn.shutdown(socket.SHUT_WR)
             conn.settimeout(DRAIN_TIMEOUT)
             try:
@@ -256,7 +309,7 @@ def is_tailnet_address(candidate: str) -> bool:
 def _run(command: list[str]) -> str:
     try:
         done = subprocess.run(
-            command, capture_output=True, text=True, timeout=DETECT_TIMEOUT
+            command, capture_output=True, encoding="utf-8", errors="replace", timeout=DETECT_TIMEOUT
         )
     except (OSError, subprocess.SubprocessError):
         return ""
@@ -419,7 +472,7 @@ def run_remote(host: str, argv: list[str], ssh_opts: list[str]) -> dict:
         check_ssh_argument(opt, "--ssh-opt")
 
     try:
-        source = Path(__file__).resolve().read_text()
+        source = Path(__file__).resolve().read_text(encoding="utf-8")
     except OSError as exc:  # pragma: no cover - only when run from a pipe
         raise CcPeerError(f"cannot read own source to send to {host}: {exc}") from exc
 
@@ -431,7 +484,7 @@ def run_remote(host: str, argv: list[str], ssh_opts: list[str]) -> dict:
     command = ["ssh", *ssh_opts, host, remote]
     try:
         completed = subprocess.run(
-            command, input=source, text=True, capture_output=True, timeout=120
+            command, input=source, encoding="utf-8", capture_output=True, timeout=120
         )
     except FileNotFoundError as exc:
         raise CcPeerError("ssh not found on PATH") from exc
@@ -486,7 +539,7 @@ def push_to_remote(host: str, ssh_opts: list[str]) -> str:
     command = ["ssh", *ssh_opts, host, remote_script]
     try:
         completed = subprocess.run(
-            command, input=source_b64, text=True,
+            command, input=source_b64, encoding="utf-8",
             capture_output=True, timeout=120,
         )
     except FileNotFoundError as exc:
@@ -612,7 +665,7 @@ def remote_installed_version(host: str, ssh_opts: list[str]) -> str | None:
     try:
         done = subprocess.run(
             ["ssh", *ssh_opts, host, probe],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, encoding="utf-8", errors="replace", timeout=30,
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -769,7 +822,7 @@ def cmd_send(args: argparse.Namespace) -> int:
     if not args.host:
         session = resolve_target(discover(include_unreachable=True), args.to)
         if not args.dry_run:
-            post_to_socket(session["socket"], text)
+            post_to_socket(session["socket"], text, pid=session["pid"])
         target = {"pid": session["pid"], "name": session["name"]}
         verb = "Would post to" if args.dry_run else "Posted to"
         name = target.get("name") or target.get("pid")
@@ -871,6 +924,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    if IS_WINDOWS:
+        for stream in (sys.stdout, sys.stderr):
+            if hasattr(stream, "reconfigure"):
+                stream.reconfigure(encoding="utf-8", errors="replace")
+
     args = build_parser().parse_args(argv)
     try:
         return args.func(args)
