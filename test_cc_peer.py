@@ -7,7 +7,9 @@ the injection paths, the caps that weren't enforced, the reply line that
 couldn't be run. The point is that the next release breaks loudly.
 """
 
+import argparse
 import base64
+import json
 import os
 import unittest
 from unittest import mock
@@ -279,6 +281,59 @@ class OwnSession(unittest.TestCase):
         with mock.patch.dict(os.environ,
                              {"CLAUDE_CODE_MESSAGING_SOCKET": "/tmp/cc-socks/odd.sock"}):
             self.assertIsNone(cc_peer.own_session())
+
+
+class ErrorHandling(unittest.TestCase):
+    """Unhandled exceptions must not break the --json contract."""
+
+    def test_main_catches_unexpected_exception_json(self):
+        import io
+        buf = io.StringIO()
+        with mock.patch.object(cc_peer, "build_parser") as bp:
+            ns = argparse.Namespace(func=mock.Mock(side_effect=RuntimeError("boom")), json=True)
+            bp.return_value.parse_args.return_value = ns
+            with mock.patch("builtins.print", side_effect=lambda *a, **kw: buf.write(a[0])):
+                code = cc_peer.main(["list", "--json"])
+        result = json.loads(buf.getvalue())
+        self.assertFalse(result["ok"])
+        self.assertIn("boom", result["error"])
+        self.assertEqual(code, cc_peer.EXIT_ERROR)
+
+    def test_main_catches_unexpected_exception_human(self):
+        import io
+        buf = io.StringIO()
+        with mock.patch.object(cc_peer, "build_parser") as bp:
+            ns = argparse.Namespace(func=mock.Mock(side_effect=RuntimeError("boom")), json=False)
+            bp.return_value.parse_args.return_value = ns
+            with mock.patch("builtins.print", side_effect=lambda *a, **kw: buf.write(a[0])):
+                code = cc_peer.main(["list"])
+        self.assertIn("boom", buf.getvalue())
+        self.assertEqual(code, cc_peer.EXIT_ERROR)
+
+    def test_discover_survives_permission_error(self):
+        with mock.patch("pathlib.Path.is_dir", return_value=True), \
+             mock.patch("pathlib.Path.glob", side_effect=PermissionError):
+            result = cc_peer.discover()
+        self.assertEqual(result, [])
+
+
+class ReadMessage(unittest.TestCase):
+    def test_rejects_tty_stdin(self):
+        args = argparse.Namespace(b64=None, message=None)
+        with mock.patch("sys.stdin") as stdin:
+            stdin.isatty.return_value = True
+            with self.assertRaises(cc_peer.CcPeerError) as caught:
+                cc_peer.read_message(args)
+        self.assertIn("terminal", str(caught.exception))
+
+    def test_catches_binary_stdin(self):
+        args = argparse.Namespace(b64=None, message=None)
+        with mock.patch("sys.stdin") as stdin:
+            stdin.isatty.return_value = False
+            stdin.read.side_effect = UnicodeDecodeError("utf-8", b"", 0, 1, "invalid")
+            with self.assertRaises(cc_peer.CcPeerError) as caught:
+                cc_peer.read_message(args)
+        self.assertIn("UTF-8", str(caught.exception))
 
 
 if __name__ == "__main__":
