@@ -105,7 +105,11 @@ def discover(include_unreachable: bool = False) -> list[dict]:
     if not directory.is_dir():
         return found
 
-    for record_file in sorted(directory.glob("*.json")):
+    try:
+        entries = sorted(directory.glob("*.json"))
+    except PermissionError:
+        return found
+    for record_file in entries:
         if not record_file.stem.isdigit():
             continue
         try:
@@ -519,7 +523,15 @@ def read_message(args: argparse.Namespace) -> str:
         except (binascii.Error, UnicodeDecodeError) as exc:
             raise CcPeerError(f"--b64 is not valid base64-encoded UTF-8: {exc}") from exc
     if args.message is None or args.message == "-":
-        return sys.stdin.read()
+        if sys.stdin.isatty():
+            raise CcPeerError(
+                "no message given and stdin is a terminal — "
+                "pass a message argument or pipe one in"
+            )
+        try:
+            return sys.stdin.read()
+        except UnicodeDecodeError as exc:
+            raise CcPeerError(f"stdin is not valid UTF-8: {exc}") from exc
     return args.message
 
 
@@ -762,6 +774,13 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_NO_TARGET if "no reachable session" in message else EXIT_ERROR
     except KeyboardInterrupt:
         return 130
+    except Exception as exc:
+        message = f"{type(exc).__name__}: {exc}"
+        if getattr(args, "json", False):
+            print(json.dumps({"ok": False, "error": message}, ensure_ascii=False))
+        else:
+            print(f"cc-peer: {message}", file=sys.stderr)
+        return EXIT_ERROR
 
 
 if __name__ == "__main__":
