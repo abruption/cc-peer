@@ -173,11 +173,12 @@ class ReplyLine(unittest.TestCase):
 
     def test_uses_actual_file_path(self):
         fake_path = "/opt/custom/cc_peer.py"
+        resolved = Path(fake_path)
         with mock.patch.object(cc_peer, "__file__", fake_path), \
              mock.patch("pathlib.Path.is_file", return_value=True), \
-             mock.patch("pathlib.Path.resolve", return_value=Path(fake_path)):
+             mock.patch("pathlib.Path.resolve", return_value=resolved):
             line = self.line()
-        self.assertIn(fake_path, line)
+        self.assertIn(str(resolved), line)
         self.assertNotIn("~/.claude/skills", line)
 
     def test_falls_back_for_stdin(self):

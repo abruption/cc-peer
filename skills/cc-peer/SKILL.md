@@ -150,3 +150,5 @@ spends tokens to say nothing.
 | `ssh ... timed out` | Plain SSH problem; verify with `ssh <host> true` first. |
 | SSH on a non-default port | Use `--ssh-opt=-p --ssh-opt=2222` (note the `=`). |
 | `list --host` says version mismatch | Run `cc-peer update` locally, or `install.sh --host` to push. |
+| `no auth key found for pid` | Windows only — the session's `.key` file is missing or unreadable. |
+| `cannot reach inbox at \\.\pipe\...` | Windows named pipe not available — session may have ended. |
