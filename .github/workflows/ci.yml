@@ -37,3 +37,31 @@ jobs:
         # SC1007 misreads `CDPATH= cd -- ...`, which is the standard guard
         # against cd printing a path, not an empty assignment.
         run: shellcheck --shell=sh --exclude=SC2016,SC1007 install.sh
+
+  install-smoke:
+    name: install smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Fresh install
+        run: ./install.sh
+      - name: Verify installation
+        run: |
+          test -f "$HOME/.claude/skills/cc-peer/cc_peer.py"
+          test -L "$HOME/.local/bin/cc-peer"
+          "$HOME/.local/bin/cc-peer" --version
+      - name: Re-run upgrades existing install
+        run: |
+          sed -i 's/__version__ = .*/__version__ = "0.0.1"/' "$HOME/.claude/skills/cc-peer/cc_peer.py"
+          ./install.sh
+          version=$("$HOME/.local/bin/cc-peer" --version)
+          echo "$version"
+          echo "$version" | grep -qv "0.0.1"
+      - name: Uninstall
+        run: |
+          ./install.sh --uninstall
+          test ! -d "$HOME/.claude/skills/cc-peer"
+          test ! -L "$HOME/.local/bin/cc-peer"
