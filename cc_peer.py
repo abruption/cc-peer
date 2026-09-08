@@ -39,7 +39,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 GITHUB_REPO = "abruption/cc-peer"
 
 # Claude Code refuses a same-machine message once its serialized form passes
