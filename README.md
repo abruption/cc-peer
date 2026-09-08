@@ -1,5 +1,10 @@
 # cc-peer
 
+[![PyPI](https://img.shields.io/pypi/v/cc-peer)](https://pypi.org/project/cc-peer/)
+[![CI](https://github.com/abruption/cc-peer/actions/workflows/ci.yml/badge.svg)](https://github.com/abruption/cc-peer/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Python 3.9+](https://img.shields.io/pypi/pyversions/cc-peer)](https://pypi.org/project/cc-peer/)
+
 Message a Claude Code session on **another machine over SSH**, without the message leaving your network.
 
 ```console
@@ -52,17 +57,33 @@ Session records live in `~/.claude/sessions/<pid>.json` and carry the socket pat
 
 ## Install
 
-Python 3.9+, standard library only.
+Python 3.9+, standard library only — no external dependencies.
 
-### pip (recommended)
+### pip
 
 ```bash
 pip install cc-peer
 ```
 
+Or with [pipx](https://pipx.pypa.io/) for an isolated install:
+
+```bash
+pipx install cc-peer
+```
+
+pip installs the `cc-peer` command but not the [Claude Code skill](#the-skill).
+To add the skill so Claude can use cc-peer on its own:
+
+```bash
+mkdir -p ~/.claude/skills/cc-peer
+curl -fsSL -o ~/.claude/skills/cc-peer/SKILL.md \
+  https://raw.githubusercontent.com/abruption/cc-peer/main/skills/cc-peer/SKILL.md
+```
+
 ### install.sh
 
-For air-gapped hosts or remote deployment over SSH:
+Installs both the command and the skill in one step. Use this for air-gapped
+hosts or remote deployment over SSH:
 
 ```bash
 git clone https://github.com/abruption/cc-peer && cd cc-peer
