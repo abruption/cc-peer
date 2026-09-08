@@ -16,7 +16,8 @@
 set -eu
 
 RAW="https://raw.githubusercontent.com/abruption/cc-peer/main"
-SKILL_DIR="$HOME/.claude/skills/cc-peer"
+CLAUDE_ROOT="${CLAUDE_CONFIG_DIR:-${ANTHROPIC_CONFIG_DIR:-$HOME/.claude}}"
+SKILL_DIR="$CLAUDE_ROOT/skills/cc-peer"
 BIN_DIR="$HOME/.local/bin"
 HOSTS=""
 UNINSTALL=0
@@ -134,7 +135,7 @@ remote_run() {
     validate_host "$host"
 
     if [ "$UNINSTALL" -eq 1 ]; then
-        ssh "$host" 'rm -f "$HOME/.local/bin/cc-peer"; rm -rf "$HOME/.claude/skills/cc-peer"; echo "removed cc-peer from $(hostname)"'
+        ssh "$host" 'R="${CLAUDE_CONFIG_DIR:-${ANTHROPIC_CONFIG_DIR:-$HOME/.claude}}"; rm -f "$HOME/.local/bin/cc-peer"; rm -rf "$R/skills/cc-peer"; echo "removed cc-peer from $(hostname)"'
         return
     fi
 
@@ -160,16 +161,17 @@ remote_run() {
     {
         echo 'set -eu'
         echo 'command -v python3 >/dev/null 2>&1 || { echo "python3 not found on $(hostname)" >&2; exit 1; }'
-        echo 'mkdir -p "$HOME/.claude/skills/cc-peer" "$HOME/.local/bin"'
-        echo 'base64 -d > "$HOME/.claude/skills/cc-peer/cc_peer.py" <<'"'"'CC_PEER_PY'"'"''
+        echo 'R="${CLAUDE_CONFIG_DIR:-${ANTHROPIC_CONFIG_DIR:-$HOME/.claude}}"'
+        echo 'mkdir -p "$R/skills/cc-peer" "$HOME/.local/bin"'
+        echo 'base64 -d > "$R/skills/cc-peer/cc_peer.py" <<'"'"'CC_PEER_PY'"'"''
         base64 < "$py"
         echo 'CC_PEER_PY'
-        echo 'base64 -d > "$HOME/.claude/skills/cc-peer/SKILL.md" <<'"'"'CC_PEER_SKILL'"'"''
+        echo 'base64 -d > "$R/skills/cc-peer/SKILL.md" <<'"'"'CC_PEER_SKILL'"'"''
         base64 < "$skill"
         echo 'CC_PEER_SKILL'
-        echo 'chmod +x "$HOME/.claude/skills/cc-peer/cc_peer.py"'
-        echo 'ln -sf "$HOME/.claude/skills/cc-peer/cc_peer.py" "$HOME/.local/bin/cc-peer"'
-        echo 'echo "installed $(python3 "$HOME/.claude/skills/cc-peer/cc_peer.py" --version) on $(hostname)"'
+        echo 'chmod +x "$R/skills/cc-peer/cc_peer.py"'
+        echo 'ln -sf "$R/skills/cc-peer/cc_peer.py" "$HOME/.local/bin/cc-peer"'
+        echo 'echo "installed $(python3 "$R/skills/cc-peer/cc_peer.py" --version) on $(hostname)"'
     } | ssh "$host" sh
 }
 
