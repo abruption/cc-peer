@@ -351,5 +351,58 @@ class ReadMessage(unittest.TestCase):
         self.assertIn("UTF-8", str(caught.exception))
 
 
+class MultiHost(unittest.TestCase):
+    """--host is repeatable: every host is visited, one failure does not stop the rest."""
+
+    def test_list_iterates_over_hosts(self):
+        calls = []
+        def fake_remote(host, argv, opts):
+            calls.append(host)
+            return {"sessions": []}
+        with mock.patch.object(cc_peer, "run_remote", side_effect=fake_remote), \
+             mock.patch.object(cc_peer, "remote_installed_version", return_value=None):
+            cc_peer.cmd_list(argparse.Namespace(
+                host=["hostA", "hostB"], ssh_opt=[], json=False, all=False))
+        self.assertEqual(calls, ["hostA", "hostB"])
+
+    def test_send_delivers_to_both_hosts(self):
+        calls = []
+        def fake_remote(host, argv, opts):
+            calls.append(host)
+            return {"ok": True, "target": {"pid": 1, "name": "w"}}
+        with mock.patch.object(cc_peer, "run_remote", side_effect=fake_remote):
+            cc_peer.cmd_send(argparse.Namespace(
+                host=["hostA", "hostB"], ssh_opt=[], json=False,
+                b64=None, message="hi", to="w", reply_to=None,
+                no_reply_to=True, no_from=True, dry_run=False))
+        self.assertEqual(calls, ["hostA", "hostB"])
+
+    def test_one_failure_continues(self):
+        def fail_then_ok(host, argv, opts):
+            if host == "bad":
+                raise cc_peer.CcPeerError("unreachable")
+            return {"sessions": []}
+        with mock.patch.object(cc_peer, "run_remote", side_effect=fail_then_ok), \
+             mock.patch.object(cc_peer, "remote_installed_version", return_value=None):
+            code = cc_peer.cmd_list(argparse.Namespace(
+                host=["bad", "good"], ssh_opt=[], json=False, all=False))
+        self.assertEqual(code, cc_peer.EXIT_ERROR)
+
+    def test_single_host_send_json_is_flat(self):
+        import io
+        buf = io.StringIO()
+        with mock.patch.object(cc_peer, "run_remote",
+                               return_value={"ok": True, "target": {"pid": 1, "name": "w"}}), \
+             mock.patch("builtins.print", side_effect=lambda *a, **kw: buf.write(a[0])):
+            cc_peer.cmd_send(argparse.Namespace(
+                host=["hostA"], ssh_opt=[], json=True,
+                b64=None, message="hi", to="w", reply_to=None,
+                no_reply_to=True, no_from=True, dry_run=False))
+        result = json.loads(buf.getvalue())
+        self.assertIsInstance(result, dict)
+        self.assertNotIsInstance(result, list)
+        self.assertTrue(result["ok"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -490,30 +490,43 @@ def emit(as_json: bool, payload: dict, human: str) -> None:
 
 
 def cmd_list(args: argparse.Namespace) -> int:
-    remote_version = None
-    if args.host:
-        result = run_remote(args.host, ["list"] + (["--all"] if args.all else []), args.ssh_opt)
-        sessions = result.get("sessions", [])
-        # Ask the machine what it has installed. result["version"] would only
-        # echo our own, since run_remote ships and runs this very file.
-        remote_version = remote_installed_version(args.host, args.ssh_opt)
-    else:
+    if not args.host:
         sessions = discover(include_unreachable=args.all)
+        human = render_sessions(sessions, "this machine")
+        emit(args.json, {"sessions": sessions, "version": __version__}, human)
+        return 0
 
-    where = args.host or "this machine"
-    human = render_sessions(sessions, where)
-    if remote_version and remote_version != __version__:
-        human = (
-            f"{where} runs cc-peer {remote_version}; this machine has {__version__}."
-            f"\nUpdate it with:  cc-peer update --host {args.host}\n\n{human}"
-        )
-    emit(
-        args.json,
-        {"sessions": sessions, "version": __version__,
-         **({"remoteVersion": remote_version} if remote_version else {})},
-        human,
-    )
-    return 0
+    exit_code = 0
+    all_results = []
+    for host in args.host:
+        try:
+            result = run_remote(host, ["list"] + (["--all"] if args.all else []), args.ssh_opt)
+            sessions = result.get("sessions", [])
+            remote_version = remote_installed_version(host, args.ssh_opt)
+            human = render_sessions(sessions, host)
+            if remote_version and remote_version != __version__:
+                human = (
+                    f"{host} runs cc-peer {remote_version}; this machine has {__version__}."
+                    f"\nUpdate it with:  cc-peer update --host {host}\n\n{human}"
+                )
+            host_result = {
+                "host": host, "sessions": sessions, "version": __version__,
+                **({"remoteVersion": remote_version} if remote_version else {}),
+            }
+            all_results.append(host_result)
+            if not args.json:
+                if len(all_results) > 1:
+                    print()
+                print(human)
+        except CcPeerError as exc:
+            exit_code = EXIT_ERROR
+            all_results.append({"host": host, "ok": False, "error": str(exc)})
+            if not args.json:
+                print(f"cc-peer: {host}: {exc}", file=sys.stderr)
+
+    if args.json:
+        print(json.dumps(all_results, ensure_ascii=False))
+    return exit_code
 
 
 def read_message(args: argparse.Namespace) -> str:
@@ -583,22 +596,31 @@ def latest_release() -> tuple[str, str]:
 
 
 def cmd_update(args: argparse.Namespace) -> int:
-    # Pushing from here beats asking the far side to fetch: the machines this
-    # tool exists for are the ones without a route to GitHub.
     if args.host:
-        there = remote_installed_version(args.host, args.ssh_opt)
-        if there is None:
-            human = (f"{args.host} has no cc-peer installed (or it is too old to say).\n"
-                     f"Install it with:  ./install.sh --host {args.host}")
-        elif there == __version__:
-            human = f"{args.host} runs cc-peer {there} — same as this machine."
-        else:
-            human = (f"{args.host} runs cc-peer {there}; this machine has {__version__}.\n"
-                     f"Push it with:  ./install.sh --host {args.host}")
-        emit(args.json,
-             {"host": args.host, "remoteVersion": there, "current": __version__},
-             human)
-        return 0
+        exit_code = 0
+        all_results = []
+        for host in args.host:
+            try:
+                there = remote_installed_version(host, args.ssh_opt)
+                if there is None:
+                    human = (f"{host} has no cc-peer installed (or it is too old to say).\n"
+                             f"Install it with:  ./install.sh --host {host}")
+                elif there == __version__:
+                    human = f"{host} runs cc-peer {there} — same as this machine."
+                else:
+                    human = (f"{host} runs cc-peer {there}; this machine has {__version__}.\n"
+                             f"Push it with:  ./install.sh --host {host}")
+                all_results.append({"host": host, "remoteVersion": there, "current": __version__})
+                if not args.json:
+                    print(human)
+            except CcPeerError as exc:
+                exit_code = EXIT_ERROR
+                all_results.append({"host": host, "ok": False, "error": str(exc)})
+                if not args.json:
+                    print(f"cc-peer: {host}: {exc}", file=sys.stderr)
+        if args.json:
+            print(json.dumps(all_results, ensure_ascii=False))
+        return exit_code
 
     tag, url = latest_release()
     latest, current = parse_version(tag), parse_version(__version__)
@@ -678,31 +700,49 @@ def cmd_send(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
 
-    if args.host:
-        encoded = base64.b64encode(text.encode("utf-8")).decode("ascii")
-        remote_argv = ["send", "--to", args.to, "--b64", encoded]
-        if args.dry_run:
-            remote_argv.append("--dry-run")
-        result = run_remote(args.host, remote_argv, args.ssh_opt)
-        target = result.get("target", {})
-    else:
+    if not args.host:
         session = resolve_target(discover(include_unreachable=True), args.to)
         if not args.dry_run:
             post_to_socket(session["socket"], text)
         target = {"pid": session["pid"], "name": session["name"]}
+        verb = "Would post to" if args.dry_run else "Posted to"
+        name = target.get("name") or target.get("pid")
+        emit(
+            args.json,
+            {"ok": True, "target": target, "chars": len(text), "dryRun": args.dry_run},
+            f"{verb} {name}'s inbox on this machine ({len(text)} chars).",
+        )
+        return 0
 
-    where = args.host or "this machine"
-    name = target.get("name") or target.get("pid")
-    # "Posted", not "delivered": the receiving session's inbound controls decide
-    # whether Claude ever reads it. A session in bypassPermissions mode holds
-    # every message for its user's approval unless crossSessionInbound is accept.
-    verb = "Would post to" if args.dry_run else "Posted to"
-    emit(
-        args.json,
-        {"ok": True, "target": target, "chars": len(text), "dryRun": args.dry_run},
-        f"{verb} {name}'s inbox on {where} ({len(text)} chars).",
-    )
-    return 0
+    exit_code = 0
+    all_results = []
+    for host in args.host:
+        try:
+            encoded = base64.b64encode(text.encode("utf-8")).decode("ascii")
+            remote_argv = ["send", "--to", args.to, "--b64", encoded]
+            if args.dry_run:
+                remote_argv.append("--dry-run")
+            result = run_remote(host, remote_argv, args.ssh_opt)
+            target = result.get("target", {})
+            name = target.get("name") or target.get("pid")
+            verb = "Would post to" if args.dry_run else "Posted to"
+            host_result = {"ok": True, "host": host, "target": target,
+                           "chars": len(text), "dryRun": args.dry_run}
+            all_results.append(host_result)
+            if not args.json:
+                print(f"{verb} {name}'s inbox on {host} ({len(text)} chars).")
+        except CcPeerError as exc:
+            exit_code = EXIT_ERROR
+            all_results.append({"ok": False, "host": host, "error": str(exc)})
+            if not args.json:
+                print(f"cc-peer: {host}: {exc}", file=sys.stderr)
+
+    if args.json:
+        if len(all_results) == 1:
+            print(json.dumps(all_results[0], ensure_ascii=False))
+        else:
+            print(json.dumps(all_results, ensure_ascii=False))
+    return exit_code
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -715,7 +755,10 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     def add_common(sub: argparse.ArgumentParser) -> None:
-        sub.add_argument("--host", help="SSH destination; omit to act on this machine")
+        sub.add_argument(
+            "--host", action="append", default=[], metavar="DEST",
+            help="SSH destination, repeatable; omit to act on this machine",
+        )
         sub.add_argument(
             "--ssh-opt",
             action="append",
