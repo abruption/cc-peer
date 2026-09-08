@@ -456,6 +456,55 @@ def run_remote(host: str, argv: list[str], ssh_opts: list[str]) -> dict:
     return result
 
 
+def push_to_remote(host: str, ssh_opts: list[str]) -> str:
+    """Push this script to a remote machine's skill dir over SSH.
+
+    Returns the version string reported by the newly installed copy.
+    The remote machine needs only python3 and ssh access — no internet,
+    no install.sh.
+    """
+    check_ssh_argument(host, "--host")
+    for opt in ssh_opts:
+        check_ssh_argument(opt, "--ssh-opt")
+
+    try:
+        source = Path(__file__).resolve().read_bytes()
+    except OSError as exc:
+        raise CcPeerError(f"cannot read own source to push to {host}: {exc}") from exc
+
+    source_b64 = base64.b64encode(source).decode("ascii")
+
+    remote_script = (
+        "set -eu; "
+        'D="$HOME/.claude/skills/cc-peer"; '
+        'mkdir -p "$D" "$HOME/.local/bin"; '
+        'base64 -d > "$D/cc_peer.py"; '
+        'chmod +x "$D/cc_peer.py"; '
+        'ln -sf "$D/cc_peer.py" "$HOME/.local/bin/cc-peer"; '
+        'python3 "$D/cc_peer.py" --version 2>/dev/null || echo "cc-peer unknown"'
+    )
+    command = ["ssh", *ssh_opts, host, remote_script]
+    try:
+        completed = subprocess.run(
+            command, input=source_b64, text=True,
+            capture_output=True, timeout=120,
+        )
+    except FileNotFoundError as exc:
+        raise CcPeerError("ssh not found on PATH") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise CcPeerError(f"ssh to {host} timed out") from exc
+    except OSError as exc:
+        raise CcPeerError(f"could not run ssh to {host}: {exc}") from exc
+
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or f"ssh exited {completed.returncode}"
+        raise CcPeerError(f"{host}: {detail}")
+
+    version_line = completed.stdout.strip()
+    parts = version_line.split()
+    return parts[-1] if parts else "unknown"
+
+
 # --------------------------------------------------------------------------
 # Output
 # --------------------------------------------------------------------------
@@ -602,17 +651,34 @@ def cmd_update(args: argparse.Namespace) -> int:
         for host in args.host:
             try:
                 there = remote_installed_version(host, args.ssh_opt)
-                if there is None:
-                    human = (f"{host} has no cc-peer installed (or it is too old to say).\n"
-                             f"Install it with:  ./install.sh --host {host}")
-                elif there == __version__:
-                    human = f"{host} runs cc-peer {there} — same as this machine."
-                else:
-                    human = (f"{host} runs cc-peer {there}; this machine has {__version__}.\n"
-                             f"Push it with:  ./install.sh --host {host}")
-                all_results.append({"host": host, "remoteVersion": there, "current": __version__})
+
+                if args.check:
+                    if there is None:
+                        state = "not installed"
+                    elif there == __version__:
+                        state = "up to date"
+                    else:
+                        state = f"{there} → {__version__} available"
+                    all_results.append({"host": host, "remoteVersion": there,
+                                        "current": __version__, "outdated": there != __version__})
+                    if not args.json:
+                        print(f"{host}: cc-peer {there or '(none)'} — {state}")
+                    continue
+
+                if there == __version__:
+                    all_results.append({"host": host, "remoteVersion": there,
+                                        "current": __version__, "updated": False})
+                    if not args.json:
+                        print(f"{host} runs cc-peer {there} — already current.")
+                    continue
+
+                new_version = push_to_remote(host, args.ssh_opt)
+                all_results.append({"host": host, "ok": True, "previous": there,
+                                    "current": __version__, "updated": True})
                 if not args.json:
-                    print(human)
+                    prev = there or "(none)"
+                    print(f"{host}: cc-peer {prev} → {new_version}")
+
             except CcPeerError as exc:
                 exit_code = EXIT_ERROR
                 all_results.append({"host": host, "ok": False, "error": str(exc)})

@@ -11,6 +11,7 @@ import argparse
 import base64
 import json
 import os
+import subprocess
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -402,6 +403,46 @@ class MultiHost(unittest.TestCase):
         self.assertIsInstance(result, dict)
         self.assertNotIsInstance(result, list)
         self.assertTrue(result["ok"])
+
+
+class PushToRemote(unittest.TestCase):
+    def test_builds_correct_ssh_command(self):
+        fake_result = subprocess.CompletedProcess([], 0, stdout="cc-peer 0.4.0\n", stderr="")
+        with mock.patch("subprocess.run", return_value=fake_result) as run, \
+             mock.patch("pathlib.Path.read_bytes", return_value=b"source"):
+            version = cc_peer.push_to_remote("web-01", ["-p", "2222"])
+        cmd = run.call_args[0][0]
+        self.assertEqual(cmd[0], "ssh")
+        self.assertIn("-p", cmd)
+        self.assertIn("web-01", cmd)
+        self.assertIn("base64 -d", cmd[-1])
+        self.assertEqual(version, "0.4.0")
+
+    def test_validates_host(self):
+        with self.assertRaises(cc_peer.CcPeerError):
+            cc_peer.push_to_remote("-oProxyCommand=whoami", [])
+
+    def test_update_host_pushes_when_outdated(self):
+        with mock.patch.object(cc_peer, "remote_installed_version", return_value="0.3.0"), \
+             mock.patch.object(cc_peer, "push_to_remote", return_value="0.4.0") as push:
+            cc_peer.cmd_update(argparse.Namespace(
+                host=["web-01"], ssh_opt=[], json=False, check=False))
+        push.assert_called_once_with("web-01", [])
+
+    def test_update_host_skips_when_current(self):
+        with mock.patch.object(cc_peer, "remote_installed_version",
+                               return_value=cc_peer.__version__), \
+             mock.patch.object(cc_peer, "push_to_remote") as push:
+            cc_peer.cmd_update(argparse.Namespace(
+                host=["web-01"], ssh_opt=[], json=False, check=False))
+        push.assert_not_called()
+
+    def test_update_host_check_reports_only(self):
+        with mock.patch.object(cc_peer, "remote_installed_version", return_value="0.3.0"), \
+             mock.patch.object(cc_peer, "push_to_remote") as push:
+            cc_peer.cmd_update(argparse.Namespace(
+                host=["web-01"], ssh_opt=[], json=False, check=True))
+        push.assert_not_called()
 
 
 if __name__ == "__main__":
