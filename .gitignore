@@ -1,6 +1,8 @@
 __pycache__/
 *.pyc
 .DS_Store
+dist/
+*.egg-info/
 
 # local-only project notes (not published)
 CLAUDE.md

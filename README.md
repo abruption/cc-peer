@@ -52,7 +52,17 @@ Session records live in `~/.claude/sessions/<pid>.json` and carry the socket pat
 
 ## Install
 
-Python 3.9+, standard library only. No runtime, no package manager.
+Python 3.9+, standard library only.
+
+### pip (recommended)
+
+```bash
+pip install cc-peer
+```
+
+### install.sh
+
+For air-gapped hosts or remote deployment over SSH:
 
 ```bash
 git clone https://github.com/abruption/cc-peer && cd cc-peer
