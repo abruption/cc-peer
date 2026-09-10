@@ -25,9 +25,9 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - name: Compile
-        run: python -m compileall -q cc_peer.py test_cc_peer.py
+        run: python -m compileall -q cc_peer.py session_peer.py test_cc_peer.py test_session_peer.py
       - name: Unit tests
-        run: python -m unittest test_cc_peer -v
+        run: python -m unittest discover -v
 
   shell:
     name: shellcheck install.sh
@@ -53,18 +53,18 @@ jobs:
         run: ./install.sh
       - name: Verify installation
         run: |
-          test -f "$HOME/.claude/skills/cc-peer/cc_peer.py"
-          test -L "$HOME/.local/bin/cc-peer"
-          "$HOME/.local/bin/cc-peer" --version
+          test -f "$HOME/.local/share/session-peer/session_peer.py"
+          test -L "$HOME/.local/bin/session-peer"
+          "$HOME/.local/bin/session-peer" --version
       - name: Re-run upgrades existing install
         run: |
-          sed -i 's/__version__ = .*/__version__ = "0.0.1"/' "$HOME/.claude/skills/cc-peer/cc_peer.py"
+          sed -i 's/__version__ = .*/__version__ = "0.0.1"/' "$HOME/.local/share/session-peer/session_peer.py"
           ./install.sh
-          version=$("$HOME/.local/bin/cc-peer" --version)
+          version=$("$HOME/.local/bin/session-peer" --version)
           echo "$version"
           echo "$version" | grep -qv "0.0.1"
       - name: Uninstall
         run: |
           ./install.sh --uninstall
-          test ! -d "$HOME/.claude/skills/cc-peer"
-          test ! -L "$HOME/.local/bin/cc-peer"
+          test ! -d "$HOME/.claude/skills/session-peer"
+          test ! -L "$HOME/.local/bin/session-peer"
