@@ -1,13 +1,14 @@
 #!/bin/sh
-# cc-peer installer.
+# session-peer installer.
 #
 #   ./install.sh                      install here
 #   ./install.sh --host web-01        install on a remote machine over SSH
 #   ./install.sh --host a --host b    ...on several
 #   ./install.sh --uninstall          remove it
 #
-# Installs cc_peer.py and its Claude Code skill into ~/.claude/skills/cc-peer,
-# and links ~/.local/bin/cc-peer. Nothing else is touched.
+# Installs the program into ~/.local/share/session-peer and the Claude skill into
+# ~/.claude/skills/session-peer,
+# and links ~/.local/bin/session-peer. Nothing else is touched.
 #
 # Remote installs push the files over the SSH connection itself, so the remote
 # machine needs no internet access — which matters, since air-gapped hosts are
@@ -15,9 +16,10 @@
 
 set -eu
 
-RAW="https://raw.githubusercontent.com/abruption/cc-peer/main"
+RAW="https://raw.githubusercontent.com/abruption/session-peer/main"
 CLAUDE_ROOT="${CLAUDE_CONFIG_DIR:-${ANTHROPIC_CONFIG_DIR:-$HOME/.claude}}"
-SKILL_DIR="$CLAUDE_ROOT/skills/cc-peer"
+SKILL_DIR="$CLAUDE_ROOT/skills/session-peer"
+PROGRAM_DIR="$HOME/.local/share/session-peer"
 BIN_DIR="$HOME/.local/bin"
 HOSTS=""
 UNINSTALL=0
@@ -26,15 +28,16 @@ die() { echo "install.sh: $*" >&2; exit 1; }
 
 usage() {
     cat <<'USAGE'
-cc-peer installer.
+session-peer installer.
 
   ./install.sh                      install here
   ./install.sh --host web-01        install on a remote machine over SSH
   ./install.sh --host a --host b    ...on several
   ./install.sh --uninstall          remove it
 
-Installs cc_peer.py and its Claude Code skill into ~/.claude/skills/cc-peer,
-and links ~/.local/bin/cc-peer. Nothing else is touched.
+Installs the program into ~/.local/share/session-peer and its Claude skill into
+~/.claude/skills/session-peer,
+and links ~/.local/bin/session-peer. Nothing else is touched.
 
 Remote installs push the files over the SSH connection itself, so the remote
 machine needs no internet access.
@@ -89,29 +92,29 @@ fi
 install_here() {
     command -v python3 >/dev/null 2>&1 || die "python3 not found"
 
-    mkdir -p "$SKILL_DIR" "$BIN_DIR"
+    mkdir -p "$SKILL_DIR" "$PROGRAM_DIR" "$BIN_DIR"
 
     # Always copy or fetch — re-running upgrades rather than skipping.
-    if [ -n "$src_dir" ] && [ -f "$src_dir/cc_peer.py" ]; then
-        cp "$src_dir/cc_peer.py" "$SKILL_DIR/cc_peer.py"
-        if [ -f "$src_dir/skills/cc-peer/SKILL.md" ]; then
-            cp "$src_dir/skills/cc-peer/SKILL.md" "$SKILL_DIR/SKILL.md"
+    if [ -n "$src_dir" ] && [ -f "$src_dir/session_peer.py" ]; then
+        cp "$src_dir/session_peer.py" "$PROGRAM_DIR/session_peer.py"
+        if [ -f "$src_dir/skills/session-peer/SKILL.md" ]; then
+            cp "$src_dir/skills/session-peer/SKILL.md" "$SKILL_DIR/SKILL.md"
         elif [ -f "$src_dir/SKILL.md" ]; then
             cp "$src_dir/SKILL.md" "$SKILL_DIR/SKILL.md"
         else
-            fetch "$RAW/skills/cc-peer/SKILL.md" "$SKILL_DIR/SKILL.md"
+            fetch "$RAW/skills/session-peer/SKILL.md" "$SKILL_DIR/SKILL.md"
         fi
     else
-        fetch "$RAW/cc_peer.py" "$SKILL_DIR/cc_peer.py"
-        fetch "$RAW/skills/cc-peer/SKILL.md" "$SKILL_DIR/SKILL.md"
+        fetch "$RAW/session_peer.py" "$PROGRAM_DIR/session_peer.py"
+        fetch "$RAW/skills/session-peer/SKILL.md" "$SKILL_DIR/SKILL.md"
     fi
 
-    chmod +x "$SKILL_DIR/cc_peer.py"
-    ln -sf "$SKILL_DIR/cc_peer.py" "$BIN_DIR/cc-peer"
+    chmod +x "$PROGRAM_DIR/session_peer.py"
+    ln -sf "$PROGRAM_DIR/session_peer.py" "$BIN_DIR/session-peer"
 
-    version=$(python3 "$SKILL_DIR/cc_peer.py" --version 2>/dev/null || echo "unknown")
+    version=$(python3 "$PROGRAM_DIR/session_peer.py" --version 2>/dev/null || echo "unknown")
     echo "installed $version on $(hostname)"
-    echo "  command: $BIN_DIR/cc-peer"
+    echo "  command: $BIN_DIR/session-peer"
     echo "  skill:   $SKILL_DIR/SKILL.md"
 
     case ":${PATH}:" in
@@ -121,9 +124,10 @@ install_here() {
 }
 
 uninstall_here() {
-    [ -L "$BIN_DIR/cc-peer" ] && rm -f "$BIN_DIR/cc-peer"
-    rm -rf "$SKILL_DIR"
-    echo "removed cc-peer from $(hostname)"
+    [ -L "$BIN_DIR/session-peer" ] && rm -f "$BIN_DIR/session-peer"
+    rm -f "$SKILL_DIR/SKILL.md" "$PROGRAM_DIR/session_peer.py"
+    rmdir "$SKILL_DIR" "$PROGRAM_DIR" 2>/dev/null || true
+    echo "removed session-peer from $(hostname)"
 }
 
 # --------------------------------------------------------------------------
@@ -135,15 +139,15 @@ remote_run() {
     validate_host "$host"
 
     if [ "$UNINSTALL" -eq 1 ]; then
-        ssh "$host" 'R="${CLAUDE_CONFIG_DIR:-${ANTHROPIC_CONFIG_DIR:-$HOME/.claude}}"; rm -f "$HOME/.local/bin/cc-peer"; rm -rf "$R/skills/cc-peer"; echo "removed cc-peer from $(hostname)"'
+        ssh "$host" 'R="${CLAUDE_CONFIG_DIR:-${ANTHROPIC_CONFIG_DIR:-$HOME/.claude}}"; rm -f "$HOME/.local/bin/session-peer"; rm -f "$R/skills/session-peer/SKILL.md" "$HOME/.local/share/session-peer/session_peer.py"; rmdir "$R/skills/session-peer" "$HOME/.local/share/session-peer" 2>/dev/null || true; echo "removed session-peer from $(hostname)"'
         return
     fi
 
     # Locate source files: next to this script, or fetch to a temp dir.
-    if [ -n "$src_dir" ] && [ -f "$src_dir/cc_peer.py" ]; then
-        py="$src_dir/cc_peer.py"
-        if [ -f "$src_dir/skills/cc-peer/SKILL.md" ]; then
-            skill="$src_dir/skills/cc-peer/SKILL.md"
+    if [ -n "$src_dir" ] && [ -f "$src_dir/session_peer.py" ]; then
+        py="$src_dir/session_peer.py"
+        if [ -f "$src_dir/skills/session-peer/SKILL.md" ]; then
+            skill="$src_dir/skills/session-peer/SKILL.md"
         elif [ -f "$src_dir/SKILL.md" ]; then
             skill="$src_dir/SKILL.md"
         else
@@ -152,9 +156,9 @@ remote_run() {
     else
         tmp_dir=$(mktemp -d)
         trap 'rm -rf "$tmp_dir"' EXIT
-        fetch "$RAW/cc_peer.py" "$tmp_dir/cc_peer.py"
-        fetch "$RAW/skills/cc-peer/SKILL.md" "$tmp_dir/SKILL.md"
-        py="$tmp_dir/cc_peer.py"
+        fetch "$RAW/session_peer.py" "$tmp_dir/session_peer.py"
+        fetch "$RAW/skills/session-peer/SKILL.md" "$tmp_dir/SKILL.md"
+        py="$tmp_dir/session_peer.py"
         skill="$tmp_dir/SKILL.md"
     fi
 
@@ -162,16 +166,16 @@ remote_run() {
         echo 'set -eu'
         echo 'command -v python3 >/dev/null 2>&1 || { echo "python3 not found on $(hostname)" >&2; exit 1; }'
         echo 'R="${CLAUDE_CONFIG_DIR:-${ANTHROPIC_CONFIG_DIR:-$HOME/.claude}}"'
-        echo 'mkdir -p "$R/skills/cc-peer" "$HOME/.local/bin"'
-        echo 'base64 -d > "$R/skills/cc-peer/cc_peer.py" <<'"'"'CC_PEER_PY'"'"''
+        echo 'mkdir -p "$R/skills/session-peer" "$HOME/.local/share/session-peer" "$HOME/.local/bin"'
+        echo 'base64 -d > "$HOME/.local/share/session-peer/session_peer.py" <<'"'"'CC_PEER_PY'"'"''
         base64 < "$py"
         echo 'CC_PEER_PY'
-        echo 'base64 -d > "$R/skills/cc-peer/SKILL.md" <<'"'"'CC_PEER_SKILL'"'"''
+        echo 'base64 -d > "$R/skills/session-peer/SKILL.md" <<'"'"'CC_PEER_SKILL'"'"''
         base64 < "$skill"
         echo 'CC_PEER_SKILL'
-        echo 'chmod +x "$R/skills/cc-peer/cc_peer.py"'
-        echo 'ln -sf "$R/skills/cc-peer/cc_peer.py" "$HOME/.local/bin/cc-peer"'
-        echo 'echo "installed $(python3 "$R/skills/cc-peer/cc_peer.py" --version) on $(hostname)"'
+        echo 'chmod +x "$HOME/.local/share/session-peer/session_peer.py"'
+        echo 'ln -sf "$HOME/.local/share/session-peer/session_peer.py" "$HOME/.local/bin/session-peer"'
+        echo 'echo "installed $(python3 "$HOME/.local/share/session-peer/session_peer.py" --version) on $(hostname)"'
     } | ssh "$host" sh
 }
 

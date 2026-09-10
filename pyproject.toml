@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "cc-peer"
+name = "session-peer"
 dynamic = ["version"]
-description = "Message Claude Code sessions on another machine over SSH"
+description = "Message coding agent sessions locally and over SSH"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.9"
@@ -32,20 +32,20 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/abruption/cc-peer"
-Repository = "https://github.com/abruption/cc-peer"
-Issues = "https://github.com/abruption/cc-peer/issues"
+Homepage = "https://github.com/abruption/session-peer"
+Repository = "https://github.com/abruption/session-peer"
+Issues = "https://github.com/abruption/session-peer/issues"
 
 [project.scripts]
-cc-peer = "cc_peer:main"
+session-peer = "session_peer:main"
 
 [tool.hatch.version]
-path = "cc_peer.py"
+path = "session_peer.py"
 pattern = '__version__ = "(?P<version>[^"]+)"'
 
 [tool.hatch.build.targets.sdist]
-include = ["cc_peer.py", "LICENSE", "README.md"]
+include = ["session_peer.py", "LICENSE", "README.md"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["."]
-include = ["cc_peer.py"]
+include = ["session_peer.py"]
