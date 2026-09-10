@@ -1,7 +1,46 @@
 # session-peer
 
 Local and SSH messaging for coding agent sessions. This project continues cc-peer;
-its Git history and issue numbers are preserved. Codex support is tracked in #44.
+its Git history and issue numbers are preserved.
+
+## Codex sessions
+
+```bash
+session-peer list --agent codex
+session-peer list --agent codex --host worker
+session-peer send --to codex:<full-thread-uuid> "message"
+session-peer send --host worker --to codex:<full-thread-uuid> "message"
+session-peer send --to codex:<full-thread-uuid> --dry-run "message"
+```
+
+The default agent remains Claude. Codex discovery reads `state_5.sqlite` using a
+read-only SQLite connection. This internal schema is experimental, tested with
+Codex CLI 0.154.0 on macOS; the core CI also runs on Linux and Windows. Saved
+sessions are not necessarily active. `--all` includes archived threads.
+
+`--codex-home` overrides the destination's `CODEX_HOME` (default `~/.codex`).
+`--codex-bin` overrides its PATH lookup of `codex`. On SSH these are remote paths;
+session-peer itself need not be installed remotely, but Codex must be installed.
+
+Submission uses `codex queue`, never direct database writes. `queued` means the
+CLI accepted the submission, not that a turn consumed it or acknowledged it.
+session-peer does not wake or resume sessions. Queue DB writes and Claude socket
+connections may require approval in the caller's execution environment; the tool
+does not change sandbox or inbound policies. A timeout has an unknown submission
+outcome: inspect the destination before retrying.
+
+Codex messages are limited to 32 KiB of UTF-8 including sender/reply headers, as a
+session-peer portability policy rather than a measured Codex server limit. NUL
+characters cannot be passed as CLI arguments. `--dry-run` verifies the executable
+and saved target but cannot guarantee a later submission will succeed.
+
+Codex list JSON retains the `{sessions, version}` local envelope. Each entry has
+`agent`, `id`, `name` (first line, at most 120 characters), `cwd`, `updatedAt` (Unix seconds), and `archived`. Send adds
+`target: {agent, id}` and `status: queued` (or `validated` under dry-run) to the
+existing `{ok, chars, dryRun}` envelope; `queueId` is optional. Remote results
+retain host attribution and status. Claude output stays compatible. A missing
+dry-run target returns exit 2; CLI execution/submission failures return exit 1.
+Existing identity/reply detection identifies Claude senders, not Codex senders.
 
 ## Moving from cc-peer
 
@@ -35,7 +74,7 @@ updates push the standalone program to the destination's neutral data directory.
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.9+](https://img.shields.io/pypi/pyversions/session-peer)](https://pypi.org/project/session-peer/)
 
-Message a Claude Code session on **another machine over SSH**, without the message leaving your network.
+For Claude Code, the original SSH inbox workflow remains available:
 
 ```console
 $ session-peer list --host build-server
@@ -123,8 +162,9 @@ git clone https://github.com/abruption/session-peer && cd session-peer
 ./install.sh --host web-01 --host db  # several at once
 ```
 
-That drops `session_peer.py` and its [Claude Code skill](skills/session-peer/SKILL.md) into
-`~/.claude/skills/session-peer/`, and links `~/.local/bin/session-peer`. Nothing else is touched.
+That places `session_peer.py` in `~/.local/share/session-peer/`, installs the
+[Claude Code skill](skills/session-peer/SKILL.md) in `~/.claude/skills/session-peer/`,
+and links `~/.local/bin/session-peer`. Existing cc-peer files are preserved.
 Remove it with `./install.sh --uninstall [--host ...]`.
 
 `session-peer update` refreshes this machine from the latest GitHub release. For another machine,

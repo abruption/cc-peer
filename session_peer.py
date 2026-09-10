@@ -1,25 +1,9 @@
 #!/usr/bin/env python3
-"""session-peer — message Claude Code sessions on another machine, over SSH.
+"""session-peer — message Claude Code and Codex sessions locally or over SSH.
 
-Claude Code delivers a cross-session message one of three ways:
-
-    same machine      -> per-session Unix domain socket, never leaves the host
-    another machine   -> through Anthropic's servers, over Remote Control
-    Claude on the web -> through Anthropic's servers
-
-This script covers the gap: another machine you can already reach over SSH,
-with nothing leaving your network. It runs the same socket write the docs
-describe under "The session's inbox socket", except it runs it inside a remote
-shell instead of a local one.
-
-Use the official Remote Control when you can. Reach for this when you can't:
-Bedrock / Vertex / Foundry, API-key auth, air-gapped networks, or unattended
-workers that nobody is around to connect.
-
-Single file, standard library only. Copy it wherever you need it; `--host`
-ships a copy of itself over SSH, so the remote machine needs nothing installed.
-
-Verified against Claude Code v2.1.263 on macOS and Ubuntu.
+Claude uses its native inbox socket/pipe; Codex uses its queue CLI. SSH runs the
+same standard-library-only script on the destination, without a remote install.
+Successful submission is not evidence of consumption or acknowledgement.
 """
 
 from __future__ import annotations
@@ -34,10 +18,13 @@ import os
 import re
 import shlex
 import socket
+import shutil
+import sqlite3
 import subprocess
 import sys
 import urllib.error
 import urllib.request
+import uuid
 from pathlib import Path
 
 __version__ = "0.6.0"
@@ -54,6 +41,8 @@ MAX_REMOTE_MESSAGE_CHARS = 90_000
 CONNECT_TIMEOUT = 10.0
 DRAIN_TIMEOUT = 2.0
 DETECT_TIMEOUT = 3.0
+CODEX_QUEUE_TIMEOUT = 30.0
+MAX_CODEX_MESSAGE_BYTES = 32 * 1024
 
 # Tailscale hands out addresses from the CGNAT range, 100.64.0.0/10. Matching on
 # "100." alone would also catch ordinary public addresses like 100.200.x.x.
@@ -65,6 +54,117 @@ EXIT_NO_TARGET = 2
 
 class CcPeerError(Exception):
     """Anything the user should see as a one-line failure."""
+
+
+class NoTargetError(CcPeerError):
+    """A requested saved session cannot be resolved."""
+
+
+def codex_home(args: argparse.Namespace) -> Path:
+    return Path(getattr(args, "codex_home", None) or os.environ.get("CODEX_HOME")
+                or Path.home() / ".codex").expanduser().resolve()
+
+
+def codex_executable(args: argparse.Namespace) -> str:
+    requested = getattr(args, "codex_bin", None) or "codex"
+    executable = shutil.which(os.path.expanduser(requested))
+    if executable is None:
+        raise CcPeerError(f"Codex executable not found: {requested!r}; set --codex-bin on the destination")
+    return str(Path(executable).absolute())
+
+
+def discover_codex(args: argparse.Namespace) -> list[dict]:
+    """Experimental saved-session discovery; never write Codex's internal DB."""
+    root = codex_home(args)
+    db = root / "state_5.sqlite"
+    if not db.is_file():
+        raise CcPeerError(f"Codex state_5.sqlite not found in {root}; check --codex-home (tested with CLI 0.154.0)")
+    try:
+        conn = sqlite3.connect(db.as_uri() + "?mode=ro", uri=True, timeout=3)
+        try:
+            conn.execute("PRAGMA query_only=ON")
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(threads)")}
+            required = {"id", "title", "cwd", "updated_at", "archived", "rollout_path"}
+            if not required <= columns:
+                raise CcPeerError("Unsupported Codex threads schema; missing: " + ", ".join(sorted(required - columns)))
+            name = "COALESCE(NULLIF(name, ''), NULLIF(title, ''), id)" if "name" in columns else "COALESCE(NULLIF(title, ''), id)"
+            query = f"SELECT id, {name}, cwd, updated_at, archived FROM threads"
+            if not getattr(args, "all", False):
+                query += " WHERE archived = 0"
+            query += " ORDER BY updated_at DESC, id ASC"
+            return [{"agent": "codex", "id": r[0], "name": str(r[1]).splitlines()[0][:120], "cwd": r[2],
+                     "updatedAt": r[3], "archived": bool(r[4])} for r in conn.execute(query)]
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        raise CcPeerError(f"Cannot read Codex state DB at {db}: {exc}") from exc
+
+
+def codex_thread(target: str) -> str:
+    value = target.removeprefix("codex:")
+    if not re.fullmatch(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", value):
+        raise CcPeerError("Codex target must be codex:<full-thread-uuid>")
+    return str(uuid.UUID(value))
+
+
+def check_codex_message(text: str) -> None:
+    size = len(text.encode("utf-8"))
+    if "\x00" in text:
+        raise CcPeerError("Codex messages cannot contain NUL characters (CLI argument limitation)")
+    if size > MAX_CODEX_MESSAGE_BYTES:
+        raise CcPeerError(f"Codex message is {size} UTF-8 bytes; session-peer limit is {MAX_CODEX_MESSAGE_BYTES}, including headers")
+
+
+def queue_codex(args: argparse.Namespace, text: str) -> dict:
+    thread_id = codex_thread(args.to)
+    check_codex_message(text)
+    executable = codex_executable(args)
+    root = codex_home(args)
+    result = {"ok": True, "target": {"agent": "codex", "id": thread_id},
+              "chars": len(text), "dryRun": args.dry_run,
+              "status": "validated" if args.dry_run else "queued"}
+    if args.dry_run:
+        discovery_args = argparse.Namespace(codex_home=str(root), all=True)
+        if not any(s["id"] == thread_id for s in discover_codex(discovery_args)):
+            raise NoTargetError(f"No saved Codex thread {thread_id} in {root}")
+        return result
+    env = dict(os.environ, CODEX_HOME=str(root))
+    try:
+        done = subprocess.run([executable, "queue", "--thread", thread_id, "--message", text],
+                              env=env, capture_output=True, encoding="utf-8", errors="replace",
+                              timeout=CODEX_QUEUE_TIMEOUT)
+    except subprocess.TimeoutExpired as exc:
+        raise CcPeerError("Codex queue timed out; submission outcome unknown. Check the target queue before retrying.") from exc
+    except OSError as exc:
+        raise CcPeerError(f"Could not execute Codex queue: {exc}") from exc
+    if done.returncode:
+        detail = (done.stderr.strip() or done.stdout.strip())[:2000]
+        raise CcPeerError(f"Codex queue failed (exit {done.returncode}, home {root}): {detail}")
+    match = re.search(r"^Queued message (\S+) for thread " + re.escape(thread_id) + r"\.$", done.stdout, re.MULTILINE)
+    if match:
+        result["queueId"] = match.group(1)
+    return result
+
+
+def codex_remote_options(args: argparse.Namespace) -> list[str]:
+    argv = []
+    for attribute, flag in (("codex_home", "--codex-home"), ("codex_bin", "--codex-bin")):
+        value = getattr(args, attribute, None)
+        if value:
+            argv.extend([flag, value])
+    return argv
+
+
+def render_codex(sessions: list[dict], where: str) -> str:
+    rows = [f"Saved Codex sessions on {where} (execution state unknown):", "THREAD  NAME  ARCHIVED  CWD"]
+    rows.extend(f"{s['id']}  {s['name']}  {s['archived']}  {s['cwd']}" for s in sessions)
+    return "\n".join(rows) if sessions else f"No saved Codex sessions on {where}."
+
+
+def codex_submission_text(result: dict, where: str) -> str:
+    if result["dryRun"]:
+        return f"Validated Codex thread {result['target']['id']} on {where}; nothing queued (submission not guaranteed)."
+    return f"Queued for Codex thread {result['target']['id']} on {where}; consumption not confirmed."
 
 
 # --------------------------------------------------------------------------
@@ -593,9 +693,11 @@ def emit(as_json: bool, payload: dict, human: str) -> None:
 
 
 def cmd_list(args: argparse.Namespace) -> int:
+    is_codex = getattr(args, "agent", "claude") == "codex"
+    render = render_codex if is_codex else render_sessions
     if not args.host:
-        sessions = discover(include_unreachable=args.all)
-        human = render_sessions(sessions, "this machine")
+        sessions = discover_codex(args) if is_codex else discover(include_unreachable=args.all)
+        human = render(sessions, "this machine")
         emit(args.json, {"sessions": sessions, "version": __version__}, human)
         return 0
 
@@ -603,10 +705,13 @@ def cmd_list(args: argparse.Namespace) -> int:
     all_results = []
     for host in args.host:
         try:
-            result = run_remote(host, ["list"] + (["--all"] if args.all else []), args.ssh_opt)
+            argv = ["list"] + (["--all"] if args.all else [])
+            if is_codex:
+                argv += ["--agent", "codex"] + codex_remote_options(args)
+            result = run_remote(host, argv, args.ssh_opt)
             sessions = result.get("sessions", [])
             remote_version = remote_installed_version(host, args.ssh_opt)
-            human = render_sessions(sessions, host)
+            human = render(sessions, host)
             if remote_version and remote_version != __version__:
                 human = (
                     f"{host} runs session-peer {remote_version}; this machine has {__version__}."
@@ -809,6 +914,9 @@ def cmd_update(args: argparse.Namespace) -> int:
 
 def cmd_send(args: argparse.Namespace) -> int:
     text = read_message(args)
+    is_codex = args.to.startswith("codex:")
+    if is_codex:
+        codex_thread(args.to)
 
     # Check the body the user actually wrote. Doing this after the reply line
     # is appended would let an empty message through on the strength of the
@@ -840,6 +948,14 @@ def cmd_send(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
 
+    if is_codex:
+        check_codex_message(text)
+
+    if not args.host and is_codex:
+        result = queue_codex(args, text)
+        emit(args.json, result, codex_submission_text(result, "this machine"))
+        return 0
+
     if not args.host:
         session = resolve_target(discover(include_unreachable=True), args.to)
         if not args.dry_run:
@@ -860,9 +976,17 @@ def cmd_send(args: argparse.Namespace) -> int:
         try:
             encoded = base64.b64encode(text.encode("utf-8")).decode("ascii")
             remote_argv = ["send", "--to", args.to, "--b64", encoded]
+            if is_codex:
+                remote_argv += codex_remote_options(args)
             if args.dry_run:
                 remote_argv.append("--dry-run")
             result = run_remote(host, remote_argv, args.ssh_opt)
+            if is_codex:
+                result["host"] = host
+                all_results.append(result)
+                if not args.json:
+                    print(codex_submission_text(result, host))
+                continue
             target = result.get("target", {})
             name = target.get("name") or target.get("pid")
             verb = "Would post to" if args.dry_run else "Posted to"
@@ -888,7 +1012,7 @@ def cmd_send(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="session-peer",
-        description="Message Claude Code sessions on another machine over SSH.",
+        description="Message Claude Code and Codex sessions locally or over SSH.",
     )
     parser.add_argument("--version", action="version", version=f"session-peer {__version__}")
 
@@ -910,6 +1034,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     listing = subparsers.add_parser("list", help="list sessions that can be messaged")
     add_common(listing)
+    listing.add_argument("--agent", choices=("claude", "codex"), default="claude")
+    listing.add_argument("--codex-home", help="Codex home on the destination machine")
+    listing.add_argument("--codex-bin", help="Codex executable on the destination (used by send)")
     listing.add_argument(
         "--all", action="store_true", help="include stale records and sessions with no inbox"
     )
@@ -917,7 +1044,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     sending = subparsers.add_parser("send", help="send one message to a session")
     add_common(sending)
-    sending.add_argument("--to", required=True, metavar="NAME|PID", help="target session")
+    sending.add_argument("--to", required=True, metavar="NAME|PID|codex:UUID", help="target session")
+    sending.add_argument("--codex-home", help="Codex home on the destination machine")
+    sending.add_argument("--codex-bin", help="Codex executable on the destination machine")
     sending.add_argument("message", nargs="?", help="message text; omit or use - to read stdin")
     sending.add_argument("--b64", help=argparse.SUPPRESS)  # used for remote dispatch
     sending.add_argument(
@@ -959,7 +1088,7 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps({"ok": False, "error": message}, ensure_ascii=False))
         else:
             print(f"session-peer: {message}", file=sys.stderr)
-        return EXIT_NO_TARGET if "no reachable session" in message else EXIT_ERROR
+        return EXIT_NO_TARGET if isinstance(exc, NoTargetError) or "no reachable session" in message else EXIT_ERROR
     except KeyboardInterrupt:
         return 130
     except Exception as exc:
