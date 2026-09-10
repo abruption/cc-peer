@@ -446,5 +446,23 @@ class PushToRemote(unittest.TestCase):
         push.assert_not_called()
 
 
+class Retirement(unittest.TestCase):
+    def test_local_update_never_downloads_or_installs_successor(self):
+        import contextlib
+        import io
+        for flags in ([], ["--check"]):
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output), \
+                 mock.patch.object(cc_peer, "latest_release") as latest, \
+                 mock.patch.object(cc_peer, "push_to_remote") as push:
+                self.assertEqual(cc_peer.main(["update", "--json", *flags]), 0)
+            result = json.loads(output.getvalue())
+            self.assertTrue(result["retired"])
+            self.assertFalse(result["updated"])
+            self.assertEqual(result["successor"], "session-peer")
+            latest.assert_not_called()
+            push.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

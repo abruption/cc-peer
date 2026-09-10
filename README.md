@@ -1,5 +1,11 @@
 # cc-peer
 
+> This is the final Claude-only release line. Its successor is
+> [session-peer](https://github.com/abruption/session-peer), adding local and SSH
+> Codex messaging. Install the new product explicitly with `pipx install session-peer`.
+> Existing `cc-peer` commands remain available; `cc-peer update` does not install
+> or rename the successor. Keep the old installation until migration is verified.
+
 [![PyPI](https://img.shields.io/pypi/v/cc-peer)](https://pypi.org/project/cc-peer/)
 [![CI](https://github.com/abruption/cc-peer/actions/workflows/ci.yml/badge.svg)](https://github.com/abruption/cc-peer/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
