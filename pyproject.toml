@@ -47,5 +47,4 @@ pattern = '__version__ = "(?P<version>[^"]+)"'
 include = ["session_peer.py", "LICENSE", "README.md"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["."]
-include = ["session_peer.py"]
+only-include = ["session_peer.py"]
