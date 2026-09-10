@@ -39,7 +39,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-__version__ = "0.5.0"
+__version__ = "0.5.1"
 GITHUB_REPO = "abruption/cc-peer"
 
 # Claude Code refuses a same-machine message once its serialized form passes
@@ -741,47 +741,15 @@ def cmd_update(args: argparse.Namespace) -> int:
             print(json.dumps(all_results, ensure_ascii=False))
         return exit_code
 
-    tag, url = latest_release()
-    latest, current = parse_version(tag), parse_version(__version__)
-
-    if args.check:
-        state = "up to date" if current >= latest else f"{tag} available"
-        emit(
-            args.json,
-            {"current": __version__, "latest": tag, "outdated": current < latest},
-            f"cc-peer {__version__} — {state}",
-        )
-        return 0
-
-    if current >= latest:
-        emit(args.json, {"current": __version__, "latest": tag, "updated": False},
-             f"cc-peer {__version__} is already current ({tag}).")
-        return 0
-
-    target = Path(__file__).resolve()
-    try:
-        with urllib.request.urlopen(url, timeout=DETECT_TIMEOUT * 4) as response:
-            source = response.read()
-    except (urllib.error.URLError, OSError) as exc:
-        raise CcPeerError(f"could not download {tag}: {exc}") from exc
-    if b"__version__" not in source:
-        raise CcPeerError(f"what came back from {url} does not look like cc_peer.py")
-
-    # We are running from the file being replaced. Write beside it and rename,
-    # so a failed download can't leave a half-written script behind.
-    staged = target.with_suffix(".py.new")
-    try:
-        staged.write_bytes(source)
-        staged.chmod(target.stat().st_mode & 0o777)
-        staged.replace(target)
-    except OSError as exc:
-        staged.unlink(missing_ok=True)
-        raise CcPeerError(f"could not replace {target}: {exc}") from exc
-
+    # Frozen compatibility release: never install another product in place.
     emit(
         args.json,
-        {"current": __version__, "latest": tag, "updated": True, "path": str(target)},
-        f"cc-peer {__version__} → {tag}  ({target})",
+        {"current": __version__, "latest": __version__, "outdated": False,
+         "updated": False, "retired": True, "successor": "session-peer",
+         "migrationUrl": "https://github.com/abruption/session-peer#moving-from-cc-peer"},
+        "cc-peer is retired at 0.5.1. Install session-peer separately: "
+        "pipx install session-peer. Existing Claude commands remain available. "
+        "See https://github.com/abruption/session-peer#moving-from-cc-peer",
     )
     return 0
 
